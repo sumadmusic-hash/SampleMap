@@ -1,0 +1,78 @@
+# ── Dependencies ───────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+
+# ── Build output (reproduzierbar via `npm run build`) ──────────
+dist/
+build/
+*.tsbuildinfo
+.vite/
+
+# ── Secrets / credentials (NIEMALS committen) ──────────────────
+.env
+.env.*
+!.env.example
+
+# ── Playwright / E2E-Artefakte ─────────────────────────────────
+test-results/
+playwright-report/
+blob-report/
+e2e/artifacts/
+playwright/.cache/
+
+# ── Cloudflare Wrangler (lokale D1-/Worker-Zustände) ───────────
+.wrangler/
+.mf/
+*.sqlite
+*.sqlite3
+*.db
+
+# ── Browser-Profile / IndexedDB / LevelDB-Snapshots ────────────
+# Auch wenn Unterverzeichnisse wie step68-real-profile/
+# step69-real-profile-fresh/ auftauchen.
+*real-profile*/
+*real-profile-fresh*/
+*chrome-profile*/
+*chromium-profile*/
+User Data/
+Default/
+IndexedDB/
+leveldb/
+*.ldb
+LOG.old/
+MANIFEST-*
+
+# ── Screenshots / Videos / Traces ──────────────────────────────
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.mp4
+*.webm
+*.trace.zip
+
+# ── Editor-/Sicherungs-Backups (lokale Reste, kein Quellcode) ──
+*.bak
+*.orig
+*.rej
+*.modern
+*.old
+*~
+
+# ── Coverage / Cache / Logs / Dumps ────────────────────────────
+coverage/
+.nyc_output/
+*.log
+*.dump
+*.tmp
+.cache/
+
+# ── macOS ──────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes

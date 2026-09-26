@@ -1,0 +1,37 @@
+# Cloudflare Workers + D1 configuration for the SampleMap GlobalSampleIndex
+# (Step 16F). This is the LOCAL/dev configuration. There is:
+#   - no deployed backend yet (16F-12 live verification is deferred — it needs a
+#     real Cloudflare account + D1 resource, which is out of scope / blocked),
+#   - no secret / token stored here (the publish write-path auth mechanism is an
+#     open question, OQ-9 — not invented in 16F).
+#
+# To provision locally you would run (requires Cloudflare login):
+#   npx wrangler d1 create samplemap-global
+#   npx wrangler d1 migrations apply samplemap-global
+# Until an account/database exists, local tests use an in-memory fake-D1 harness
+# (test/fakeD1.ts) — these are explicitly NOT "real" Cloudflare tests.
+
+name = "samplemap-d1-worker"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+# Publish (write) cap: request body payload ceiling and per-batch item cap.
+# These bounds are enforced in the Worker before any D1 write (see §14 of
+# STEP16E_DESIGN.md). They are plain integers, not secrets.
+[vars]
+PUBLISH_MAX_BATCH = "100"
+PUBLISH_MAX_BODY_BYTES = "262144"
+MAP_DEFAULT_LIMIT = "200"
+MAP_MAX_LIMIT = "1000"
+API_ALLOWED_ORIGIN = "http://localhost:5176"
+
+# D1 binding. database_id is a placeholder until real D1 provisioned; local
+# tests never reach this binding (they inject a fake-D1 through the provider).
+[[d1_databases]]
+binding = "DB"
+database_name = "samplemap-global"
+database_id = "fc5221fa-57d8-4fd8-ac8c-11b623a06ad6"
+
+# Migrations directory relative to this file.
+[observability]
+enabled = true

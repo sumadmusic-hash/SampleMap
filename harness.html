@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SampleMap E2E Harness (offline)</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        background: #101014;
+        color: #d8d8e0;
+      }
+      .ui-section {
+        border: 1px solid #2a2a34;
+        border-radius: 8px;
+        padding: 0.6rem 0.8rem;
+        margin: 0.6rem 0;
+        background: #16161c;
+      }
+      .ui-section-title {
+        margin: 0 0 0.5rem;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        color: #9aa;
+        letter-spacing: 0.08em;
+      }
+      button {
+        background: #20203a;
+        color: #dfe;
+        border: 1px solid #3a3a56;
+        border-radius: 6px;
+        padding: 0.4rem 0.8rem;
+        cursor: pointer;
+        margin-right: 0.4rem;
+        font: inherit;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      input,
+      select {
+        background: #1b1b24;
+        color: #dfe;
+        border: 1px solid #33334a;
+        border-radius: 6px;
+        padding: 0.4rem;
+        font: inherit;
+      }
+      .scan-status,
+      .scan-count,
+      .scan-pages,
+      .analysis-status,
+      .analysis-count,
+      .analysis-ratio,
+      .machiniste-status {
+        color: #c8c8d8;
+        font-size: 0.82rem;
+        margin: 0.15rem 0;
+      }
+      .scan-error,
+      .analysis-error,
+      .preview-error,
+      .send-error {
+        color: #e77;
+        font-size: 0.82rem;
+        margin: 0.15rem 0;
+      }
+      #harness-log {
+        margin-top: 1rem;
+        border-top: 1px solid #2a2a34;
+        padding-top: 0.6rem;
+        font-size: 0.78rem;
+        color: #a8a8b8;
+        white-space: pre-wrap;
+      }
+      .log-ok {
+        color: #7c7;
+      }
+      .log-err {
+        color: #e77;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="harness-log"></div>
+    <script type="module" src="/src/e2e/harness/main.ts"></script>
+  </body>
+</html>

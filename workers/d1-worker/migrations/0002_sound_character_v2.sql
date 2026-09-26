@@ -1,0 +1,16 @@
+-- SampleMap GlobalSampleIndex — Step 41: compact canonical V2 knowledge.
+--
+-- Adds ONE nullable TEXT column to `content` carrying the STEP41 V2 knowledge
+-- block (JSON of GlobalSoundCharacterKnowledge from src/global/contract.ts).
+-- The block's essential payload is the base64 of the 17-byte V2.SC-v1 packed
+-- SoundCharacter (1 null-mask byte + 8 x uint16); it ALSO pins the independent
+-- analysis / similarity-algorithm / sound-space / classification versions,
+-- confidence and durationMs so a hydrator can rebuild a local analysisV2
+-- without re-analyzing audio.
+--
+-- Invariants preserved:
+--   * Additive: existing rows keep NULL (no V2 knowledge) and stay fully valid.
+--   * Never BLOB: the block is JSON TEXT (strings/numbers) — no audio bytes.
+--   * Backfill-only: the publish upsert fills this column only when it is NULL
+--     (COALESCE), so a stored V2 block is never clobbered by a re-publish.
+ALTER TABLE content ADD COLUMN sound_character_v2 TEXT;

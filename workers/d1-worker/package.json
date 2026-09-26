@@ -1,0 +1,18 @@
+{
+  "name": "samplemap-d1-worker",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Cloudflare D1 + Workers provider for the SampleMap GlobalSampleIndex (Step 16F).",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "wrangler deploy --dry-run --outdir dist 2>/dev/null || echo \"wrangler not installed; build skipped (local tests use fake D1 harness)\""
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260903.1",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0",
+    "wrangler": "^4.128.0"
+  }
+}

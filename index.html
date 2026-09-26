@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SampleMap</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; background: #0F1115; color: #E7EAF0; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      #log { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .log { color: #9ce; }
+      .ok { color: #7c7; }
+      .warn { color: #ec7; }
+      .err { color: #e77; }
+      pre { background: #181C23; padding: 0.75rem; border-radius: 6px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+      #login { display: block; margin: 1rem 0; padding: 0.4rem 0.8rem; background: #4C8DFF; color: #fff; border: 0; border-radius: 6px; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <h1 style="margin:0.5rem 1rem">SampleMap</h1>
+    <slot id="auth-slot">
+      <button id="login" style="display:none">Log in with Audiotool</button>
+    </slot>
+    <div id="log"></div>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

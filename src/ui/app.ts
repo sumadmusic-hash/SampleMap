@@ -855,6 +855,12 @@ if (this.scanAborted) {
     this.analysis.error = undefined;
     this.analysis.status = p.stoppedReason === "pause" ? "paused" : "stopped";
     this.notify();
+    // The analysis run wrote its records straight into the index; the result set
+    // (and with it the result list and the map) is only re-read here. Without this
+    // the surfaces keep serving the pre-run results and the map stays empty even
+    // though every record is analyzed and carries a persisted map position.
+    // Best-effort: a failing re-read must not surface as an unhandled rejection.
+    if (typeof this.deps.search?.search === "function") void this.refreshSearch();
   }
 
   // ------------------------------------------------------------------

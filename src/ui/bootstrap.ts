@@ -75,9 +75,21 @@ export function browserDecode(audioCtx: AudioContext): AudioDecoder {
   };
 }
 
-/** Fetch a sample's lossless audio bytes for transient in-RAM analysis (Step 15H). */
-async function browserFetchAudio(_sample: SampleMeta, source: LosslessSource): Promise<FetchedAudio> {
-  const res = await fetch(source.url);
+/**
+ * Fetch a sample's lossless audio bytes for transient in-RAM analysis (Step 15H).
+ *
+ * STEP77 — `cache: "no-store"` is mandatory here. The Audiotool CDN answers the
+ * lossless sample URLs with `Cache-Control: public, max-age=86400`, so a plain
+ * `fetch(url)` persists every sample's full audio in the browser's HTTP disk
+ * cache (measured: 172 samples -> +483 MB `Cache_Data`, 563 MB after browser
+ * close) even though the bytes are only needed transiently in RAM. Analysis
+ * results belong in IndexedDB; the audio itself must never be persisted.
+ */
+export async function browserFetchAudio(
+  _sample: SampleMeta,
+  source: LosslessSource,
+): Promise<FetchedAudio> {
+  const res = await fetch(source.url, { cache: "no-store" });
   if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
   const bytes = await res.arrayBuffer();
   return { bytes, release: () => undefined };

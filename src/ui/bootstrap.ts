@@ -191,6 +191,12 @@ export async function buildBrowserDeps(opts: {
 
   const machiniste = new SampleMapMachinisteService(opts.doc);
 
+  // STEP76 POC — explicit scan-budget override for controlled measurement.
+  // Inactive by default: without ?scanMaxSamples= the app keeps the standard
+  // 200 budget exactly as before. Only an explicit, finite, in-range value in
+  // the URL opts into a larger scan. Never unbounded.
+  const scanMaxSamples = readScanMaxSamplesOverride();
+
   return {
     queue,
     index,
@@ -202,7 +208,7 @@ export async function buildBrowserDeps(opts: {
     known,
     previewUrlFor,
     analysisBuild,
-    scanMaxSamples: 200,
+    scanMaxSamples,
     globalIndex: opts.globalIndex,
     resolveSample,
     globalPublishQueue: opts.globalPublishQueue,
@@ -217,3 +223,30 @@ export async function buildBrowserDeps(opts: {
     authenticatedUserId,
   };
 }
+
+/**
+ * STEP76 POC — reads the optional `?scanMaxSamples=` query parameter.
+ *
+ * Returns the standard scan budget (200) unless the URL explicitly carries a
+ * finite, positive, in-range override. Anything else — missing, malformed,
+ * non-finite, non-positive or out of range — falls back to the standard budget.
+ * The override is never read from storage, so it cannot persist or creep up.
+ */
+export function readScanMaxSamplesOverride(
+  search: string = typeof window === "undefined" ? "" : window.location.search,
+  standard: number = STANDARD_SCAN_MAX_SAMPLES,
+): number {
+  const raw = new URLSearchParams(search).get("scanMaxSamples");
+  if (raw === null || raw.trim() === "") return standard;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return standard;
+  const value = Math.floor(parsed);
+  if (value < 1 || value > MAX_SCAN_MAX_SAMPLES_OVERRIDE) return standard;
+  return value;
+}
+
+/** Hard ceiling for the POC override — the scan is never allowed to run unbounded. */
+const MAX_SCAN_MAX_SAMPLES_OVERRIDE = 5000;
+
+/** The unmodified STEP76 standard scan budget. */
+const STANDARD_SCAN_MAX_SAMPLES = 200;

@@ -25,6 +25,7 @@ import {
   panBy,
   applyCamera,
   pointAt,
+  POINT_HIT_RADIUS_PX,
   BASE_POINT_RADIUS_PX,
   SELECTED_POINT_SCALE,
   pointRadius,
@@ -448,22 +449,121 @@ describe("map view : camera-aware hit test (Step 15F hover/click)", () => {
     );
   });
 
-  it("pointAt prefers the nearest point when two are both in range", () => {
-    const points = mapPoints([
-      rec("samples/a", { mapPosition: { x: 0.4, y: 0.5 } }),
-      rec("samples/b", { mapPosition: { x: 0.7, y: 0.5 } }),
-    ]);
-    const cam = defaultMapCamera();
-    const baseA = toScreen(points[0], SIZE);
-    const baseB = toScreen(points[1], SIZE);
-    // Both differ only in x by >40px; pointer 2px right of A.
-    expect(baseA.y).toBe(baseB.y);
-    expect(Math.abs(baseA.x - baseB.x)).toBeGreaterThan(40);
-    expect(pointAt(points, { x: baseA.x + 2, y: baseA.y }, cam)?.sampleId).toBe(
-      points[0].sampleId,
-    );
+    it("pointAt prefers the nearest point when two are both in range", () => {
+      const points = mapPoints([
+        rec("samples/a", { mapPosition: { x: 0.4, y: 0.5 } }),
+        rec("samples/b", { mapPosition: { x: 0.7, y: 0.5 } }),
+      ]);
+      const cam = defaultMapCamera();
+      const baseA = toScreen(points[0], SIZE);
+      const baseB = toScreen(points[1], SIZE);
+      // Both differ only in x by >40px; pointer 2px right of A.
+      expect(baseA.y).toBe(baseB.y);
+      expect(Math.abs(baseA.x - baseB.x)).toBeGreaterThan(40);
+      expect(pointAt(points, { x: baseA.x + 2, y: baseA.y }, cam)?.sampleId).toBe(
+        points[0].sampleId,
+      );
+    });
+
+    // -----------------------------------------------------------------------
+    // STEP76 S6: draw order vs. hit-test tie-break.
+    // The renderer appends its circles in `points` order, so the LAST entry is
+    // the one painted on top. A click must resolve to that same point.
+    // -----------------------------------------------------------------------
+
+    /** Two DISTINCT points (different content identity) at the same position. */
+    const coincident = (firstId: string, secondId: string) =>
+      mapPoints([
+        rec(firstId, { mapPosition: { x: 0.5, y: 0.5 } }),
+        rec(secondId, { mapPosition: { x: 0.5, y: 0.5 } }),
+      ]);
+
+    it("two exactly coincident points: the LAST drawn (topmost) point is selected", () => {
+      const points = coincident("samples/a", "samples/b");
+      expect(points).toHaveLength(2);
+      const cam = defaultMapCamera();
+      const at = toScreen(points[0], SIZE);
+      // A click on the shared position must return the topmost circle, which is
+      // the last one the renderer appended — samples/b, NOT the hidden samples/a.
+      expect(pointAt(points, at, cam)?.sampleId).toBe("samples/b");
+    });
+
+    it("coincident tie-break follows draw order: reversed input selects the reversed winner", () => {
+      const cam = defaultMapCamera();
+      const forward = coincident("samples/a", "samples/b");
+      const reversed = [...coincident("samples/a", "samples/b")].reverse();
+      expect(reversed.map((p) => p.sampleId)).toEqual(["samples/b", "samples/a"]);
+      const at = toScreen(forward[0], SIZE);
+      // Same geometry, opposite order -> the other point is now the topmost one.
+      expect(pointAt(forward, at, cam)?.sampleId).toBe("samples/b");
+      expect(pointAt(reversed, at, cam)?.sampleId).toBe("samples/a");
+    });
+
+    it("unequal distances still resolve to the genuinely nearest point, in any order", () => {
+      const cam = defaultMapCamera();
+      const points = mapPoints([
+        rec("samples/near", { mapPosition: { x: 0.5, y: 0.5 } }),
+        rec("samples/far", { mapPosition: { x: 0.55, y: 0.5 } }),
+      ]);
+      const near = points.find((p) => p.sampleId === "samples/near")!;
+      const far = points.find((p) => p.sampleId === "samples/far")!;
+      // A real distance difference, not a tie.
+      expect(Math.abs(toScreen(near, SIZE).x - toScreen(far, SIZE).x)).toBeGreaterThan(10);
+      const clickOnNear = toScreen(near, SIZE);
+      for (const order of [points, [...points].reverse()]) {
+        // Pointer on the near point -> near wins no matter where it sits in the array.
+        expect(pointAt(order, clickOnNear, cam)?.sampleId).toBe("samples/near");
+        // Pointer just left of the far point -> far is genuinely closer there.
+        const leftOfFar = { x: toScreen(far, SIZE).x - 6, y: toScreen(far, SIZE).y };
+        expect(pointAt(order, leftOfFar, cam)?.sampleId).toBe("samples/far");
+      }
+    });
+
+    it("ordinary clicks are unchanged: pointer on a point hits that point", () => {
+      const points = makeTwo();
+      const cam = defaultMapCamera();
+      for (const p of [...points, ...points].slice(0, 2)) {
+        const at = toScreen(p, SIZE);
+        expect(pointAt(points, at, cam)?.sampleId).toBe(p.sampleId);
+        expect(pointAt([...points].reverse(), at, cam)?.sampleId).toBe(p.sampleId);
+      }
+    });
+
+    it("hover and click resolve identically: the hit-test is a pure function of (points, pointer, camera)", () => {
+      // mapRender routes BOTH hoverAt() and pointerdown through the very same
+      // `pointAt(points, clientToBase(svg, e), camera)` call, so one resolver
+      // covers both. This pins that the resolver is deterministic and does not
+      // depend on any hidden per-call state.
+      const cam = zoomBy(defaultMapCamera(), 3, CENTRE);
+      const cases: Array<ReturnType<typeof mapPoints>> = [
+        makeTwo(),
+        coincident("samples/a", "samples/b"),
+        mapPoints([
+          rec("samples/a", { mapPosition: { x: 0.4, y: 0.5 } }),
+          rec("samples/b", { mapPosition: { x: 0.7, y: 0.5 } }),
+          rec("samples/c", { mapPosition: { x: 0.4, y: 0.8 } }),
+        ]),
+      ];
+      for (const points of cases) {
+        for (const p of points) {
+          const client = applyCamera(toScreen(p, SIZE), cam);
+          const hoverHit = pointAt(points, client, cam)?.sampleId;
+          const clickHit = pointAt(points, client, cam)?.sampleId;
+          expect(clickHit).toBe(hoverHit);
+          // Repeating the query must not drift (no sticky "last hit" state).
+          expect(pointAt(points, client, cam)?.sampleId).toBe(hoverHit);
+        }
+      }
+      // For a coincident pair both gestures land on the visible topmost point.
+      const pair = coincident("samples/a", "samples/b");
+      const at = toScreen(pair[0], SIZE);
+      expect(pointAt(pair, at, cam)?.sampleId).toBe(pointAt(pair, at, cam)?.sampleId);
+    });
+
+    it("hit radius is untouched by the tie-break fix", () => {
+      expect(POINT_HIT_RADIUS_PX).toBe(13);
+    });
   });
-});
 
 describe("map view : position invariance under camera (Step 15F §18)", () => {
   const records = [

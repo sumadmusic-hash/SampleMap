@@ -275,6 +275,13 @@ export function applyCamera(screen: ScreenPosition, camera: MapCamera): ScreenPo
  * pixel units; the search runs through the current view transform so hover and
  * click stay correct after zoom/pan. Returns undefined when nothing is within
  * `radiusPx`.
+ *
+ * Tie-break (STEP76): nearest wins; on an EXACT distance tie the LAST entry of
+ * `points` wins. The renderer appends its circles in exactly this array order,
+ * so the last entry is the one painted on top — the tie-break therefore returns
+ * the point the user actually SEES. With a strict `<` comparison the earlier
+ * (visually hidden) entry won instead, so clicking the visible dot selected an
+ * invisible sample for exactly coincident points.
  */
 export function pointAt(
   points: readonly MapPoint[],
@@ -286,7 +293,7 @@ export function pointAt(
   for (const point of points) {
     const s = applyCamera(toScreen(point, { width: MAP_WIDTH, height: MAP_HEIGHT }), camera);
     const d = Math.hypot(s.x - pointer.x, s.y - pointer.y);
-    if (d <= radiusPx && (best === undefined || d < best.distance)) {
+    if (d <= radiusPx && (best === undefined || d <= best.distance)) {
       best = { distance: d, point };
     }
   }

@@ -141,8 +141,12 @@ export const DRAG_THRESHOLD_PX = 4;
 export const POINT_HIT_RADIUS_PX = 13;
 
 /** FINAL_UI_UX §8.1 + STEP38 §27 (CORRECTED): base point radius, SCREEN-space,
- *  exactly 5px at every zoom level — never scales with zoom. */
-export const BASE_POINT_RADIUS_PX = 5;
+ *  exactly 2.5px at every zoom level — never scales with zoom.
+ *  STEP76: reduced from 5px so 800+ point clouds stay separable. Selection and
+ *  focus remain unmistakable — they additionally carry `stroke-width: 2.5` and the
+ *  selection glow from samplemap.css, independent of this radius. Hit-testing is
+ *  governed separately by POINT_HIT_RADIUS_PX, which is unchanged. */
+export const BASE_POINT_RADIUS_PX = 2.5;
 /** FINAL_UI_UX §8.2: selected/focused radius = base × this scale. */
 export const SELECTED_POINT_SCALE = 1.35;
 

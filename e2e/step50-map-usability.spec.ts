@@ -90,11 +90,14 @@ test.describe.serial("STEP50 map usability (offline harness fixtures)", () => {
     await expect(page.locator("[data-testid^='map-point-']")).toHaveCount(4);
     const base = await positionsOf(page, ALL);
     expect(Object.values(base).every((p) => p[0] !== "gone")).toBe(true);
-    // on-screen point fill diameter at zoom×1 ≈ 10px (r=5px screen-space constant).
+    // on-screen point fill diameter at zoom×1 ≈ 5px (r=2.5px screen-space constant,
+    // STEP76: reduced from r=5px so 800+ point clouds stay separable). The SVG is
+    // laid out at a container scale of ~0.775, so the window is the same relative
+    // 0.7x–1.3x band the former r=5px check used (7–13px around a 10px diameter).
     const w = await circleScreenFillWidthPx(page, KICK);
     expect(w).not.toBeNull();
-    expect(w!).toBeGreaterThan(7);
-    expect(w!).toBeLessThan(13);
+    expect(w!).toBeGreaterThan(3.5);
+    expect(w!).toBeLessThan(6.5);
   });
 
   test("50M-02 zoom 1→2→4→1: stored coords untouched, screen radius constant", async () => {

@@ -220,7 +220,7 @@ export function renderSampleMap(
   // Point radius (FINAL_UI_UX §8.1 + STEP38 §27, corrected): the base-unit SVG
   // radius is the SCREEN-space constant divided by the camera zoom, because the
   // content group carries the zoom transform. The rendered ON-SCREEN radius is
-  // therefore exactly BASE_POINT_RADIUS_PX (5px) at every zoom level — zoom
+  // therefore exactly BASE_POINT_RADIUS_PX at every zoom level — zoom
   // changes spatial separation ONLY, never point size. Emphasized (focused or
   // batch-selected, §8.2) uses a larger but equally zoom-independent radius.
   // Presentation only — positions untouched.

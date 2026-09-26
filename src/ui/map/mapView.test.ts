@@ -500,12 +500,12 @@ describe("map view : position invariance under camera (Step 15F §18)", () => {
 });
 
 describe("map view : point radius (FINAL_UI_UX §8.1 + STEP38 §27, corrected)", () => {
-  it("base radius is exactly 5px in screen space at 100% zoom", () => {
+  it("base radius is exactly 2.5px in screen space at 100% zoom", () => {
     expect(pointRadius(DEFAULT_ZOOM)).toBe(BASE_POINT_RADIUS_PX);
-    expect(BASE_POINT_RADIUS_PX).toBe(5);
+    expect(BASE_POINT_RADIUS_PX).toBe(2.5);
   });
 
-  it("radius is zoom-INDEPENDENT: exactly 5px at every zoom level", () => {
+  it("radius is zoom-INDEPENDENT: exactly 2.5px at every zoom level", () => {
     // STEP38 correction — the point radius must NOT scale with zoom. The value
     // itself is a screen-space constant regardless of the argument.
     for (const zoom of [0.5, 1, 1.25, 1.6, 2, 4, 8]) {
@@ -513,14 +513,14 @@ describe("map view : point radius (FINAL_UI_UX §8.1 + STEP38 §27, corrected)",
     }
     // The renderer draws the base-unit SVG radius as (screen radius ÷ group
     // zoom) so that after the content group's scale transform the ON-SCREEN
-    // radius resolves back to exactly 5px at any zoom.
+    // radius resolves back to exactly 2.5px at any zoom.
     for (const zoom of [1, 1.6, 2, 4, 8]) {
       const baseUnit = pointRadius(zoom) / zoom;
       expect(baseUnit * zoom).toBeCloseTo(BASE_POINT_RADIUS_PX, 5);
     }
   });
 
-  it("emphasized (focused/batch-selected) radius = base × 1.35 (§8.2), ≈6.75px, also zoom-independent", () => {
+  it("emphasized (focused/batch-selected) radius = base × 1.35 (§8.2), ≈3.375px, also zoom-independent", () => {
     expect(pointRadius(DEFAULT_ZOOM, true)).toBeCloseTo(
       BASE_POINT_RADIUS_PX * SELECTED_POINT_SCALE,
       5,
@@ -539,7 +539,7 @@ describe("map view : point radius (FINAL_UI_UX §8.1 + STEP38 §27, corrected)",
     expect(pointRadius(4)).toBe(pointRadius(4));
     expect(pointRadius(4, true)).toBe(pointRadius(4, true));
     expect(pointRadius(1)).toBe(pointRadius(8));
-    // Defensive: degenerate / non-finite zoom input still returns the 5px
+    // Defensive: degenerate / non-finite zoom input still returns the 2.5px
     // constant (never NaN).
     expect(pointRadius(0)).toBe(BASE_POINT_RADIUS_PX);
     expect(Number.isFinite(pointRadius(Number.NaN))).toBe(true);

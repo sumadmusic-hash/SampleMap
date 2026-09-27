@@ -15,7 +15,6 @@ import { createGlobalProvider, readProviderFor } from "./global/liveProvider";
 import {
   acceptUsageAndEnqueue,
   flushPendingPublications,
-  reconstructPending,
 } from "./global/usageAcceptance";
 import { populatePublishQueue } from "./global/population";
 import { mountAuthenticated } from "./ui/main";

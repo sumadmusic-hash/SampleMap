@@ -1065,6 +1065,7 @@ if (this.scanAborted) {
       await populatePublishQueue({ index, queue: globalPublishQueue });
       if (this.globalPublishDeliveryMode === "live") {
         await flushPendingPublications({ index, queue: globalPublishQueue });
+        void this.refreshGlobalPoints().catch(() => {});
       }
     } catch {
       // Population/delivery must never surface as an analysis failure; the

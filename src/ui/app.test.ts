@@ -2130,7 +2130,7 @@ describe("SampleMap UI : automatic global population (Step 70)", () => {
       expect(publishQueue.pendingCount).toBe(0);
 
       app.analyze(10);
-      await fake.settle(defaultProgress({ analyzed: 1, stoppedReason: "complete" }));
+      await fake.settle(defaultProgress({ analyzed: 1, stoppedReason: "empty" }));
 
       // Wait a tick for the async fire-and-forget population to complete
       await flush();

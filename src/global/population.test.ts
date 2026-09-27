@@ -21,7 +21,6 @@ import { flushPendingPublications } from "./usageAcceptance";
 const SAMPLE_AAA = "samples/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const SAMPLE_BBB = "samples/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const HASH_XYZ = "f".repeat(64);
-const HASH_ABC = "a".repeat(64);
 const NOW_ISO = "2026-03-01T00:00:00.000Z";
 
 let dbCounter = 0;

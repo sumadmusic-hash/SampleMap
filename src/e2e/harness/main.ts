@@ -45,6 +45,7 @@ import {
   acceptUsageAndEnqueue,
   flushPendingPublications,
 } from "../../global/usageAcceptance";
+import { populatePublishQueue } from "../../global/population";
 import type { TransferEvidence } from "../../global/usageAcceptance";
 import type { PublishDeliveryMode } from "../../ui/view";
 
@@ -465,12 +466,26 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
     const consentStore = createStorageEp7ConsentStore(window.localStorage);
     consentStore.grant();
 
-    // STEP16R E-P6 — an in-memory publish queue over the scripted provider.
-    // Read-only for the UI, driven from the spec via `__sm.publish`.
-    const publishProvider = new ScriptedPublishProvider();
-    const publishQueue = new GlobalPublishQueue(publishProvider, {});
+    // STEP16R E-P6 — an in-memory publish queue over the scripted provider by default,
+    // or CloudflareGlobalAdapter if workerUrl parameter is set.
+    const urlParams = new URLSearchParams(window.location.search);
+    const initialWorkerUrl = urlParams.get("workerUrl");
+    const scriptedProvider = new ScriptedPublishProvider();
+    scriptedProvider.setAllOffline();
+
+    let publishProvider: GlobalSampleIndex = scriptedProvider;
     let publishDelivery: PublishDeliveryMode = "offline";
-    publishProvider.setAllOffline();
+    if (initialWorkerUrl) {
+      const { CloudflareGlobalAdapter } = await import(
+        "../../../workers/d1-worker/src/browserAdapter"
+      );
+      publishProvider = new CloudflareGlobalAdapter({
+        baseUrl: initialWorkerUrl,
+        origin: window.location.origin,
+      });
+      publishDelivery = "live";
+    }
+    let publishQueue = new GlobalPublishQueue(publishProvider, {});
 
     const deps: SampleMapAppDeps = {
       queue,
@@ -487,9 +502,7 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
       resolveSample: async (id: string) => metaById.get(id),
       globalPublishQueue: publishQueue,
       globalPublishDelivery: publishDelivery,
-      // READ path for the e2e harness only. The provider's `queryMapViewport`
-      // serves fixture points injected via `global.mirrorRecord`; the publish
-      // semantics above stay exactly as they were (offline/unavailable).
+      // READ path: real live adapter if workerUrl provided, else scripted provider
       globalIndex: publishProvider,
       ep7Consent: consentStore,
       collectionStore,
@@ -570,13 +583,17 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
 
     interface PublishHooks {
       queue: typeof publishQueue;
-      provider: ScriptedPublishProvider;
+      provider: GlobalSampleIndex;
       /** Set the outcome the provider returns for one sample on the next flush. */
       setSampleOutcome: (sampleId: string, outcome: PublishSpecOutcome) => void;
       /** Offline semantics: every publish becomes temporary-unavailable/retryable. */
       setAllOffline: () => void;
       resetOutcomes: () => void;
       clear: () => void;
+      /** Run automatic population: local analyzed eligible records → queue. */
+      populate: () => Promise<import("../../global/population").PopulatePublishQueueResult>;
+      /** Connect harness to the real live Cloudflare/D1 worker adapter. */
+      connectLiveWorker: (workerUrl: string) => Promise<ReturnType<typeof mountSampleMap>>;
       /** Persist a pending acceptance marker + enqueue the publish (16H). */
       accept: (
         sampleId: string,
@@ -594,7 +611,10 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
        * bootstrap-time fact). Records persist in IndexedDB; `refreshSearch`
        * repopulates the map without re-analyzing.
        */
-      remount: (mode: PublishDeliveryMode) => Promise<ReturnType<typeof mountSampleMap>>;
+      remount: (
+        mode: PublishDeliveryMode,
+        options?: { workerUrl?: string },
+      ) => Promise<ReturnType<typeof mountSampleMap>>;
       /** Re-read the index (syncs the focused record) and re-render, awaited. */
       refresh: () => Promise<void>;
     }
@@ -801,16 +821,17 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
         queue: publishQueue,
         provider: publishProvider,
         setSampleOutcome: (sampleId: string, outcome: PublishSpecOutcome) =>
-          publishProvider.set(
+          scriptedProvider.set(
             sampleId,
             outcome.reason !== undefined
               ? { status: "rejected", reason: outcome.reason }
               : { status: outcome.status as "stored" | "already-known" },
           ),
-setAllOffline: () => publishProvider.setAllOffline(),
-      resetOutcomes: () => publishProvider.reset(),
-      /** Clear the queue (in-memory reset between scenarios). */
-      clear: () => publishQueue.clear(),
+        setAllOffline: () => scriptedProvider.setAllOffline(),
+        resetOutcomes: () => scriptedProvider.reset(),
+        /** Clear the queue (in-memory reset between scenarios). */
+        clear: () => publishQueue.clear(),
+        populate: () => populatePublishQueue({ index, queue: tm.publish.queue }),
         accept: async (sampleId: string) => {
           const sample = metaById.get(sampleId);
           if (!sample) throw new Error(`accept: unknown sample ${sampleId}`);
@@ -834,9 +855,9 @@ setAllOffline: () => publishProvider.setAllOffline(),
         },
         flush: async (outcome?: Record<string, PublishSpecOutcome>) => {
           if (outcome) {
-            publishProvider.reset();
+            scriptedProvider.reset();
             for (const [sampleId, o] of Object.entries(outcome)) {
-              publishProvider.set(
+              scriptedProvider.set(
                 sampleId,
                 o.reason !== undefined
                   ? { status: "rejected", reason: o.reason }
@@ -859,15 +880,40 @@ setAllOffline: () => publishProvider.setAllOffline(),
             markedPublished: res.markedPublished,
           };
         },
-        remount: async (mode: PublishDeliveryMode) => {
+        remount: async (mode: PublishDeliveryMode, options?: { workerUrl?: string }) => {
           publishDelivery = mode;
-          if (mode === "offline") publishProvider.setAllOffline();
+          if (mode === "live" && options?.workerUrl) {
+            const { CloudflareGlobalAdapter } = await import(
+              "../../../workers/d1-worker/src/browserAdapter"
+            );
+            publishProvider = new CloudflareGlobalAdapter({
+              baseUrl: options.workerUrl,
+              origin: window.location.origin,
+            });
+            publishQueue = new GlobalPublishQueue(publishProvider, {});
+            tm.publish.queue = publishQueue;
+            tm.publish.provider = publishProvider;
+          } else if (mode === "offline") {
+            scriptedProvider.setAllOffline();
+            publishProvider = scriptedProvider;
+            publishQueue = new GlobalPublishQueue(publishProvider, {});
+            tm.publish.queue = publishQueue;
+            tm.publish.provider = publishProvider;
+          }
           disposedApps.push(app);
           disposeSampleMap(app);
-          app = mountSampleMap(root, { ...deps, globalPublishDelivery: mode });
+          app = mountSampleMap(root, {
+            ...deps,
+            globalPublishQueue: publishQueue,
+            globalPublishDelivery: mode,
+            globalIndex: publishProvider,
+          });
           await app.refreshSearch();
           tm.app = app;
           return app;
+        },
+        connectLiveWorker: async (workerUrl: string) => {
+          return tm.publish.remount("live", { workerUrl });
         },
         refresh: async () => app.refreshSearch(),
       },
@@ -905,7 +951,7 @@ setAllOffline: () => publishProvider.setAllOffline(),
             representativeSampleId: rec.sampleId,
             primaryClass: rec.primaryClass,
           };
-          publishProvider.setMapPoints([point]);
+          scriptedProvider.setMapPoints([point]);
           await app.refreshGlobalPoints();
           return point;
         },
@@ -936,7 +982,7 @@ setAllOffline: () => publishProvider.setAllOffline(),
               primaryClass: "kick",
             });
           }
-          publishProvider.setMapPoints(points);
+          scriptedProvider.setMapPoints(points);
           await app.refreshGlobalPoints();
           return points;
         },
@@ -954,7 +1000,7 @@ setAllOffline: () => publishProvider.setAllOffline(),
               primaryClass: "kick",
             });
           }
-          publishProvider.setMapPoints(points);
+          scriptedProvider.setMapPoints(points);
           await app.refreshGlobalPoints();
           return points;
         },
@@ -1066,13 +1112,13 @@ setAllOffline: () => publishProvider.setAllOffline(),
             }
           }
 
-          publishProvider.setMapPoints(points);
+          scriptedProvider.setMapPoints(points);
           await app.refreshGlobalPoints();
           return points;
         },
         /** Drop all fixture global points and refresh. */
         clear: async (): Promise<void> => {
-          publishProvider.setMapPoints([]);
+          scriptedProvider.setMapPoints([]);
           await app.refreshGlobalPoints();
         },
         /** The global points the app currently holds. */

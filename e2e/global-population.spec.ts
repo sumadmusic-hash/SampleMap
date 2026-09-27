@@ -204,4 +204,146 @@ test.describe.serial("Step 70 — Automatic Global Population E2E", () => {
       (window as any).__sm.app.setVisibility({ global: true, mine: true }),
     );
   });
+
+  test("6. Real live Cloudflare/D1 Worker: publish, query /map, verify returned points and DOM deduplication", async () => {
+    const workerUrl = "https://samplemap-d1-worker.sumadmusic.workers.dev";
+
+    // Check real worker connectivity from browser
+    const workerLive = await page.evaluate(async (url) => {
+      try {
+        const res = await fetch(`${url}/health`);
+        return res.ok;
+      } catch {
+        return false;
+      }
+    }, workerUrl);
+
+    expect(workerLive).toBe(true);
+
+    // 1. Connect harness to real Cloudflare/D1 worker
+    await page.evaluate(async (url) => {
+      await (window as any).__sm.publish.connectLiveWorker(url);
+    }, workerUrl);
+
+    // 2. Clear any lingering in-memory queue state and run real populate
+    await page.evaluate(async () => {
+      (window as any).__sm.publish.clear();
+      // Ensure all 4 analyzed fixture records are in pending state for this live publish test
+      const records = await (window as any).__sm.index.getAll();
+      for (const rec of records) {
+        await (window as any).__sm.index.put({
+          ...rec,
+          globalPublish: undefined,
+        });
+      }
+      await (window as any).__sm.publish.populate();
+    });
+
+    const pendingCount = await page.evaluate(
+      () => (window as any).__sm.publish.queue.pendingCount,
+    );
+    expect(pendingCount).toBe(4);
+
+    // 3. Trigger Publish to real Worker
+    const liveFlush = await page.evaluate(async () => {
+      return await (window as any).__sm.publish.flush();
+    });
+
+    expect(liveFlush.submitted).toBe(4);
+    expect(liveFlush.succeeded).toBe(4);
+    expect(liveFlush.rejected).toBe(0);
+
+    // Verify all 4 local records are marked 'published'
+    const records = await page.evaluate(() => (window as any).__sm.index.getAll());
+    for (const rec of records) {
+      expect(rec.globalPublish?.delivery).toBe("published");
+    }
+
+    // 4. Query global points from real Worker
+    await page.evaluate(async () => {
+      await (window as any).__sm.app.refreshGlobalPoints();
+    });
+
+    // Wait for the global map state to be "ok"
+    await page.waitForFunction(
+      () => (window as any).__sm.app.globalMapState === "ok",
+      null,
+      { timeout: 15_000 },
+    );
+
+    // Check that points returned from real D1 include our 4 samples
+    const globalPoints = await page.evaluate(
+      () => (window as any).__sm.app.globalPoints,
+    );
+    expect(globalPoints.length).toBeGreaterThanOrEqual(4);
+
+    const fixtureHashes = new Set(records.map((r: any) => r.contentHash));
+    const matchedPoints = globalPoints.filter((pt: any) =>
+      fixtureHashes.has(pt.contentIdentity.contentHash),
+    );
+    expect(matchedPoints).toHaveLength(4);
+
+    // 5. Test Global ON + My OFF -> Local records that are also global
+    //    visibleMapRecords only contains LOCAL records whose content identity
+    //    is in the global set — global-only points (from prior D1 runs) don't
+    //    appear here. So we expect exactly 4 (our fixture records).
+    await page.evaluate(() =>
+      (window as any).__sm.app.setVisibility({ global: true, mine: false }),
+    );
+    await page.waitForTimeout(200);
+
+    const globalOnlyCount = await page.evaluate(
+      () => (window as any).__sm.app.visibleMapRecords.length,
+    );
+    expect(globalOnlyCount).toBe(4);
+
+    // 6. Test Global ON + My ON -> Union of Global and My Samples
+    //    All 4 local records are both "mine" and "global" → union = 4.
+    await page.evaluate(() =>
+      (window as any).__sm.app.setVisibility({ global: true, mine: true }),
+    );
+    await page.waitForTimeout(200);
+
+    const unionCount = await page.evaluate(
+      () => (window as any).__sm.app.visibleMapRecords.length,
+    );
+    expect(unionCount).toBe(4);
+
+    // 7. Verify DOM rendered circles: no duplicates
+    const domInfo = await page.evaluate(() => {
+      const circles = Array.from(
+        document.querySelectorAll("circle[data-sample-id]"),
+      );
+      const ids = circles.map((c) => c.getAttribute("data-sample-id")!);
+      const duplicates = ids.filter((v, i, a) => a.indexOf(v) !== i);
+      return { total: ids.length, duplicates };
+    });
+    expect(domInfo.duplicates).toEqual([]);
+
+    // 8. Test Global OFF + My ON -> Exactly 4 local samples
+    await page.evaluate(() =>
+      (window as any).__sm.app.setVisibility({ global: false, mine: true }),
+    );
+    await page.waitForTimeout(200);
+    const mineOnlyCount = await page.evaluate(
+      () => (window as any).__sm.app.visibleMapRecords.length,
+    );
+    expect(mineOnlyCount).toBe(4);
+
+    // 9. Test Global OFF + My OFF -> 0 points
+    await page.evaluate(() =>
+      (window as any).__sm.app.setVisibility({ global: false, mine: false }),
+    );
+    await page.waitForTimeout(200);
+    const noneCount = await page.evaluate(
+      () => (window as any).__sm.app.visibleMapRecords.length,
+    );
+    expect(noneCount).toBe(0);
+
+    // Restore default
+    await page.evaluate(() =>
+      (window as any).__sm.app.setVisibility({ global: true, mine: true }),
+    );
+  });
 });
+

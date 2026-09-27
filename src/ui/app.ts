@@ -17,6 +17,8 @@ import type { SampleMeta } from "@audiotool/nexus/api";
 import type { GlobalSampleIndex, GlobalAnalysisResult } from "../global/contract";
 import type { GlobalMapPoint } from "../global/contract";
 import { mapVersion } from "../map/mapPosition";
+import { mineSampleIds, resolveMapVisibility } from "./map/visibility";
+import type { MapVisibility, SampleMembership, VisibilityToggles } from "./map/visibility";
 import { findSimilar } from "../similarity/similaritySearch";
 import type { SimilarSampleResult } from "../similarity/similaritySearch";
 import {
@@ -517,6 +519,24 @@ export class SampleMapApp {
     sortDir: "desc",
   };
 
+  /**
+   * Global / My Samples — two INDEPENDENT visibility toggles over the one
+   * shared 2D sound space. The visible map set is their UNION (never the
+   * intersection); all four combinations are valid, including both OFF.
+   *
+   * Default: both ON, so the map shows the widest possible view (the user's
+   * own samples plus the existing global set) instead of starting empty.
+   */
+  readonly visibility: { global: boolean; mine: boolean } = { global: true, mine: true };
+
+  /**
+   * The COMPLETE set of the authenticated user's known sample ids, in ANY
+   * analysis status — not viewport-bounded and not limited to analyzed
+   * samples. Refreshed together with the search snapshot so newly persisted
+   * live-analysis records join the set immediately.
+   */
+  private mySampleIds = new Set<string>();
+
   readonly machiniste: MachinisteState = {
     lastResult: undefined,
     error: undefined,
@@ -972,6 +992,64 @@ if (this.scanAborted) {
     await this.refreshSearch();
   }
 
+  // ------------------------------------------------------------------
+  // Global / My Samples visibility — map-only, search untouched
+  // ------------------------------------------------------------------
+
+  /**
+   * Toggle Global and/or My Samples. The two flags are fully independent, and
+   * only the passed key(s) change — passing one never resets the other.
+   *
+   * This is deliberately NOT a search filter: `results` (the searchable set)
+   * is left completely untouched, so a sample stays findable through the
+   * existing search mechanism even while it is not on the map. Only the map's
+   * visible point set changes, which is a pure projection of `results`.
+   */
+  async setVisibility(patch: Partial<VisibilityToggles>): Promise<void> {
+    this.visibility.global = patch.global ?? this.visibility.global;
+    this.visibility.mine = patch.mine ?? this.visibility.mine;
+    // Deliberately no re-search: the searchable set did not change, so this is
+    // a render-only update. A full re-search here would risk an epoch race for
+    // no benefit.
+    this.notify();
+  }
+
+  /** The records that may become map points under the current toggles. */
+  get visibleMapRecords(): readonly SampleIndexRecord[] {
+    return this.mapVisibility.visibleRecords;
+  }
+
+  /** Membership (isGlobal/isMine) for every record, visible or not. */
+  get mapMembership(): ReadonlyMap<string, SampleMembership> {
+    return this.mapVisibility.membershipAll;
+  }
+
+  /**
+   * The complete set of the authenticated user's known sample ids (any analysis
+   * status). Never viewport-bounded and never limited to analyzed samples.
+   */
+  get mySamples(): ReadonlySet<string> {
+    return this.mySampleIds;
+  }
+
+  /** True when the authenticated user's stable id is known (My Samples works). */
+  get hasAuthenticatedIdentity(): boolean {
+    return typeof this.authenticatedUserId === "string" && this.authenticatedUserId.length > 0;
+  }
+
+  /**
+   * The current visibility projection, recomputed per access so it can never go
+   * stale against `results` / `globalPoints` / the toggles.
+   */
+  private get mapVisibility(): MapVisibility {
+    return resolveMapVisibility(
+      this.results.map((r) => r.record),
+      this.globalPoints,
+      this.visibility,
+      this.authenticatedUserId,
+    );
+  }
+
   /** Project current filters onto the SearchEngine (read-only). */
   async refreshSearch(): Promise<void> {
     // SM-AUDIT-008: every refresh supersedes the previous in-flight one
@@ -995,6 +1073,16 @@ if (this.scanAborted) {
     // This never REMOVES an entry — a focused/selected sample stays resolvable.
     for (const r of this.results) {
       this.knownRecords.set(r.record.sampleId, r.record);
+    }
+    // My Samples membership is recomputed from the COMPLETE index (any status),
+    // not from the analyzed search hits — so a sample that is known but not
+    // (yet) analyzed is still part of the user's set, and a record persisted
+    // by a live analysis run joins it as soon as this snapshot lands.
+    if (this.deps.index) {
+      const allRecords = await this.deps.index.getAll();
+      // The getAll() above awaits — a newer refresh may own the state now.
+      if (epoch !== this.searchEpoch) return;
+      this.mySampleIds = mineSampleIds(allRecords, this.authenticatedUserId);
     }
     // STEP27 — index-refresh must NEVER drop a collection member; instead the
     // availability snapshot is re-synced so stale members surface as

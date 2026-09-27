@@ -76,6 +76,7 @@ import { MAX_BATCH_SLOTS } from "../machiniste/machinisteService";
 import type { SampleIndexRecord } from "../persistence/indexStore";
 import { renderSampleMap } from "./map/mapRender";
 import { MAP_VERSION, ZOOM_STEP } from "./map/mapView";
+import { visibleGlobalPoints } from "./map/visibility";
 import "./samplemap.css";
 
 /**
@@ -337,6 +338,25 @@ export function renderApp(root: HTMLElement, app: SampleMapApp): void {
       }
     }
   }
+}
+
+/**
+ * Empty-map copy for the Global / My Samples visibility layer.
+ *
+ * With both toggles off the map is empty BY CHOICE, which must be stated
+ * plainly instead of looking like "no samples found". Otherwise the existing
+ * search-aware empty message is reused unchanged.
+ */
+function visibilityEmptyMessage(app: SampleMapApp, visibleCount: number): string {
+  if (visibleCount > 0) return emptyStateMessage(hasActiveSearch(app.searchState));
+  const { global, mine } = app.visibility;
+  if (!global && !mine) {
+    return "Map hidden — enable Global and/or My Samples to show samples.";
+  }
+  if (mine && !app.hasAuthenticatedIdentity) {
+    return "My Samples is on, but the authenticated user is unknown — ownership cannot be determined.";
+  }
+  return emptyStateMessage(hasActiveSearch(app.searchState));
 }
 
 /** Input types that support caret selection (number/range inputs do not). */
@@ -721,6 +741,64 @@ function renderFiltersPanel(app: SampleMapApp): HTMLElement {
   sortField.appendChild(sortSel);
   filters.appendChild(sortField);
 
+  // ── Global / My Samples: two INDEPENDENT visibility toggles ────────────────
+  // One shared 2D sound space; the visible set is the UNION of the enabled
+  // modes. Toggling either never touches the other, and never changes the
+  // searchable result set (a sample stays findable while off the map).
+  const visRow = el("div", "filter-row visibility-row");
+  const makeToggle = (
+    testid: string,
+    labelText: string,
+    isOn: boolean,
+    count: number,
+    title: string,
+    onToggle: () => void,
+  ): HTMLElement => {
+    const field = el("div", "filter-field");
+    const btn = button(testid, `${labelText} (${count})`);
+    btn.setAttribute("data-testid", testid);
+    btn.setAttribute("aria-pressed", isOn ? "true" : "false");
+    btn.setAttribute("data-active", isOn ? "true" : "false");
+    btn.title = title;
+    if (isOn) btn.classList.add("is-active");
+    btn.onclick = onToggle;
+    field.appendChild(btn);
+    return field;
+  };
+
+  const vis = app.visibility;
+  const visField = el("div", "filter-field");
+  const visLabel = el("label", "filter-label", "Visibility");
+  visField.appendChild(visLabel);
+  visField.appendChild(
+    makeToggle(
+      "filter-global",
+      "Global",
+      vis.global,
+      app.globalPoints.length,
+      "Show the existing global sample set on the map",
+      () => void app.setVisibility({ global: !app.visibility.global }),
+    ),
+  );
+  // The count is the COMPLETE known sample set of the authenticated user (any
+  // analysis status) — not only what is currently analyzed or on the map.
+  const mineField = makeToggle(
+    "filter-my-samples",
+    "My Samples",
+    vis.mine,
+    app.mySamples.size,
+    app.hasAuthenticatedIdentity
+      ? "Show the samples owned by the authenticated user"
+      : "Authenticated user unknown — ownership cannot be determined",
+    () => void app.setVisibility({ mine: !app.visibility.mine }),
+  );
+  if (!app.hasAuthenticatedIdentity) {
+    mineField.querySelector("button")?.setAttribute("data-identity-unavailable", "true");
+  }
+  visField.appendChild(mineField);
+  visRow.appendChild(visField);
+  filters.appendChild(visRow);
+
   // Active-filter summary line (E-P4.2) — hidden when nothing is filtered.
   const summary = activeFilterSummary(st);
   if (summary) {
@@ -769,20 +847,27 @@ function renderMapPanel(app: SampleMapApp): HTMLElement {
 
   const host = el("div", "sample-map-host");
   host.setAttribute("data-testid", "sample-map-host");
+  // Visibility projection: the searched records filtered by the two INDEPENDENT
+  // toggles (union, deduplicated by sampleId). The searchable `results` list
+  // itself is untouched, so every sample stays findable even while off the map.
+  const visibleRecords = app.visibleMapRecords;
   renderSampleMap(host, {
-    records: app.results.map((r) => r.record),
+    records: visibleRecords,
     selectedSampleId: app.focusedSampleId ?? undefined,
     // FINAL UI/UX v1.1 Phase 1: batch-selected points render with the
     // selection treatment (§17.2) independently of the focused point.
     selectedSampleIds: app.selectedSampleIds,
     onSelect: (record) => app.selectSample(record),
-    globalPoints: app.globalPoints,
+    // The existing global pool only contributes points while Global is on.
+    // mergeMapPoints() still collapses a global point onto the identical local
+    // content identity, so an overlap renders exactly once.
+    globalPoints: visibleGlobalPoints(app.globalPoints, app.visibility),
     onSelectGlobal: (point) => void app.selectGlobalPoint(point),
     camera: app.mapCamera,
     onCamera: (camera) => {
       app.setMapCamera(camera);
     },
-    emptyMessage: emptyStateMessage(hasActiveSearch(app.searchState)),
+    emptyMessage: visibilityEmptyMessage(app, visibleRecords.length),
   });
 
   // Step 16L: global-map state line (idle/loading/ok/empty/error). It never

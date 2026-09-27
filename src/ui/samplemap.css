@@ -322,6 +322,49 @@ button.analysis-budget-btn {
   letter-spacing: normal;
 }
 
+/* --- Global / My Samples visibility toggles (independent) ----------- */
+
+.visibility-row .filter-field {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.visibility-row .filter-label {
+  width: 100%;
+}
+
+.visibility-row button {
+  font: 500 12px/1 var(--font-ui);
+  color: var(--text-secondary);
+  background: var(--bg-panel);
+  border: var(--border-w) solid var(--border-weak);
+  border-radius: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.visibility-row button:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+/* Active state is driven by data-active/aria-pressed so the ON/OFF state is
+   readable without relying on colour alone. */
+.visibility-row button[data-active="true"] {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-panel));
+}
+
+.visibility-row button[data-identity-unavailable="true"] {
+  color: var(--text-disabled);
+  border-color: var(--border-weak);
+  cursor: not-allowed;
+}
+
 /* --- Status lines --------------------------------------------------- */
 
 .scan-status,

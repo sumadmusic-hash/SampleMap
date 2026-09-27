@@ -5,6 +5,7 @@ import {
   resolveMapVisibility,
   globalContentIdentities,
   visibleGlobalPoints,
+  mapEmptyMessage,
 } from "./visibility";
 import { mapPoints } from "./mapView";
 import { SampleMapApp } from "../app";
@@ -301,6 +302,165 @@ describe("visibility: sound space coordinates are untouched", () => {
     // The two global-only samples were never positionable locally; the rest
     // still project to exactly the same coordinates as before the filter.
     expect(mapPoints(all.visibleRecords)).toHaveLength(unfiltered.length - 1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("visibility: empty-map copy never blames the toggles wrongly", () => {
+  const base = {
+    visibleCount: 0,
+    globalPointCount: 0,
+    mySampleCount: 0,
+    hasIdentity: true,
+    hasActiveSearch: false,
+    resultCount: 4,
+  };
+
+  it("OFF/OFF says the map is hidden by choice", () => {
+    expect(mapEmptyMessage({ ...base, toggles: { global: false, mine: false } })).toBe(
+      "Map hidden — enable Global and/or My Samples to show samples.",
+    );
+  });
+
+  it("OFF/OFF wins over every other empty reason", () => {
+    // Even with an unknown identity and both sets empty, "hidden" is the truth.
+    expect(
+      mapEmptyMessage({
+        ...base,
+        hasIdentity: false,
+        toggles: { global: false, mine: false },
+      }),
+    ).toBe("Map hidden — enable Global and/or My Samples to show samples.");
+  });
+
+  it("Global ON with an empty global set does NOT claim 'No analyzed samples yet.'", () => {
+    const msg = mapEmptyMessage({
+      ...base,
+      mySampleCount: 4, // four analysed samples exist, they are just filtered off
+      toggles: { global: true, mine: false },
+    });
+    expect(msg).toBe("Global has no samples available in the current view.");
+    expect(msg).not.toMatch(/no analyzed samples/i);
+  });
+
+  it("My Samples ON with an empty my-set reports that set", () => {
+    expect(
+      mapEmptyMessage({ ...base, toggles: { global: false, mine: true } }),
+    ).toBe("My Samples has no samples available.");
+  });
+
+  it("keeps the unknown-identity hint when My Samples is on", () => {
+    expect(
+      mapEmptyMessage({
+        ...base,
+        hasIdentity: false,
+        toggles: { global: false, mine: true },
+      }),
+    ).toBe(
+      "My Samples is on, but the authenticated user is unknown — ownership cannot be determined.",
+    );
+  });
+
+  it("unknown identity outranks an empty global set (both toggles on)", () => {
+    expect(
+      mapEmptyMessage({
+        ...base,
+        hasIdentity: false,
+        toggles: { global: true, mine: true },
+      }),
+    ).toMatch(/authenticated user is unknown/);
+  });
+
+  it("both toggles on and both sets empty names both sets", () => {
+    expect(mapEmptyMessage({ ...base, toggles: { global: true, mine: true } })).toBe(
+      "Global and My Samples have no samples available.",
+    );
+  });
+
+  it("both toggles on, only the global set empty names the global set", () => {
+    expect(
+      mapEmptyMessage({ ...base, mySampleCount: 4, toggles: { global: true, mine: true } }),
+    ).toBe("Global has no samples available in the current view.");
+  });
+
+  it("both toggles on, only the my-set empty names the my-set", () => {
+    expect(
+      mapEmptyMessage({ ...base, globalPointCount: 3, toggles: { global: true, mine: true } }),
+    ).toBe("My Samples has no samples available.");
+  });
+
+  it("stays silent when the active sets are non-empty (not a visibility problem)", () => {
+    // Both sets have data but nothing is positionable -> the ordinary
+    // search/analysis empty state must apply, NOT a visibility message.
+    expect(
+      mapEmptyMessage({
+        ...base,
+        globalPointCount: 2,
+        mySampleCount: 4,
+        toggles: { global: true, mine: true },
+      }),
+    ).toBeUndefined();
+    expect(
+      mapEmptyMessage({ ...base, globalPointCount: 2, toggles: { global: true, mine: false } }),
+    ).toBeUndefined();
+    expect(
+      mapEmptyMessage({ ...base, mySampleCount: 4, toggles: { global: false, mine: true } }),
+    ).toBeUndefined();
+  });
+
+  it("stays silent when something is actually visible", () => {
+    expect(
+      mapEmptyMessage({
+        ...base,
+        visibleCount: 1,
+        toggles: { global: false, mine: false },
+      }),
+    ).toBeUndefined();
+  });
+
+  // ── search precedence (pre-existing contract, pinned by e2e EP2/EP4) ──
+  it("an active search that matched nothing keeps its own message", () => {
+    expect(
+      mapEmptyMessage({
+        ...base,
+        hasActiveSearch: true,
+        resultCount: 0,
+        toggles: { global: true, mine: true },
+      }),
+    ).toBeUndefined();
+    expect(
+      mapEmptyMessage({
+        ...base,
+        hasActiveSearch: true,
+        resultCount: 0,
+        toggles: { global: true, mine: false },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("an active search that DID match still lets the toggles explain the emptiness", () => {
+    // 1 hit found, then My Samples filtered it away -> the toggle is the cause.
+    expect(
+      mapEmptyMessage({
+        ...base,
+        hasActiveSearch: true,
+        resultCount: 1,
+        mySampleCount: 4,
+        globalPointCount: 0,
+        toggles: { global: true, mine: false },
+      }),
+    ).toBe("Global has no samples available in the current view.");
+  });
+
+  it("OFF/OFF still says 'hidden' even when the search matched nothing", () => {
+    expect(
+      mapEmptyMessage({
+        ...base,
+        hasActiveSearch: true,
+        resultCount: 0,
+        toggles: { global: false, mine: false },
+      }),
+    ).toBe("Map hidden — enable Global and/or My Samples to show samples.");
   });
 });
 

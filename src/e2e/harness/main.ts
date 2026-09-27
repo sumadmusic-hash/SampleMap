@@ -30,6 +30,7 @@ import type {
   GlobalSampleIndex,
   GlobalPublishItemOutcome,
   GlobalPublishBatch,
+  GlobalMapPoint,
 } from "../../global/contract";
 import {
   acceptUsageAndEnqueue,
@@ -287,9 +288,22 @@ function fetchFixtureAudio(_sample: SampleMeta): Promise<FetchedAudio> {
  * sample (exactly what the real 16H `offlineProvider` returns; see
  * src/global/liveProvider.ts). Lookups return empty — the publish surface is
  * write-path only, this harness never exercises reuse.
+ *
+ * `queryMapViewport` DOES serve deterministic fixture map points, so the read
+ * path (Global visibility and the local/global content-identity merge) becomes
+ * browser-verifiable. `setMapPoints` is fed by the `global.mirrorRecord` test
+ * hook, which copies the identity straight off a PERSISTED local record. The
+ * merge therefore runs on the real production identity rule
+ * (`contentIdentityKey`) instead of on a hand-written hash.
  */
 class ScriptedPublishProvider implements GlobalSampleIndex {
   private readonly outBySample = new Map<string, GlobalPublishItemOutcome>();
+  private mapPoints: GlobalMapPoint[] = [];
+
+  /** Fixture global map points served by `queryMapViewport`. */
+  setMapPoints(points: readonly GlobalMapPoint[]): void {
+    this.mapPoints = [...points];
+  }
 
   reset(): void {
     this.outBySample.clear();
@@ -322,7 +336,7 @@ class ScriptedPublishProvider implements GlobalSampleIndex {
   }
 
   async queryMapViewport() {
-    return { mapVersion: "", points: [] };
+    return { mapVersion: "", points: this.mapPoints };
   }
 
   async publishAnalysisResults(batch: GlobalPublishBatch) {
@@ -446,6 +460,10 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
       resolveSample: async (id: string) => metaById.get(id),
       globalPublishQueue: publishQueue,
       globalPublishDelivery: publishDelivery,
+      // READ path for the e2e harness only. The provider's `queryMapViewport`
+      // serves fixture points injected via `global.mirrorRecord`; the publish
+      // semantics above stay exactly as they were (offline/unavailable).
+      globalIndex: publishProvider,
       ep7Consent: consentStore,
       collectionStore,
       // STEP38 — the fixture library is the authenticated user's OWN pool
@@ -587,6 +605,22 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
         grant: () => void;
         /** Remove the preference (back to first-use state). */
         reset: () => void;
+      };
+      /**
+       * Global MAP read-path controls (test-only).
+       *
+       * `mirrorRecord(sampleId)` publishes a global point that carries the
+       * PERSISTED local record's own `contentHash`/`contentHashVersion` and
+       * `mapPosition`. That makes the sample simultaneously `isGlobal` and
+       * `isMine`, so the real merge path (`mergeMapPoints`, keyed by
+       * `contentIdentityKey`) and the real renderer can be checked in a real
+       * browser for exactly-one-circle behaviour. No product code is involved
+       * and no hash is invented here — the identity is read back from the index.
+       */
+      global: {
+        mirrorRecord: (sampleId: string) => Promise<GlobalMapPoint>;
+        clear: () => Promise<void>;
+        current: () => GlobalMapPoint[];
       };
       /**
        * STEP23 — V2 similarity surface controls (test-only; product code never
@@ -731,6 +765,44 @@ setAllOffline: () => publishProvider.setAllOffline(),
           app.refreshSearch();
         },
         reset: () => consentStore.clear(),
+      },
+      global: {
+        /**
+         * Make the given already-analyzed fixture sample appear in the global
+         * set as well, then refresh the app's global points. Returns the
+         * global point that was served.
+         */
+        mirrorRecord: async (sampleId: string): Promise<GlobalMapPoint> => {
+          const rec = await index.get(sampleId);
+          if (!rec) throw new Error(`global.mirrorRecord: no record ${sampleId}`);
+          if (!rec.contentHash) {
+            throw new Error(`global.mirrorRecord: ${sampleId} has no contentHash`);
+          }
+          const mp = rec.mapPosition;
+          if (!mp) {
+            throw new Error(`global.mirrorRecord: ${sampleId} has no mapPosition`);
+          }
+          const point: GlobalMapPoint = {
+            contentIdentity: {
+              contentHash: rec.contentHash,
+              contentHashVersion: rec.contentHashVersion ?? "unknown",
+            },
+            x: mp.x,
+            y: mp.y,
+            representativeSampleId: rec.sampleId,
+            primaryClass: rec.primaryClass,
+          };
+          publishProvider.setMapPoints([point]);
+          await app.refreshGlobalPoints();
+          return point;
+        },
+        /** Drop all fixture global points and refresh. */
+        clear: async (): Promise<void> => {
+          publishProvider.setMapPoints([]);
+          await app.refreshGlobalPoints();
+        },
+        /** The global points the app currently holds. */
+        current: (): GlobalMapPoint[] => app.globalPoints,
       },
       v2: {
         attach: async (keys?: string[]): Promise<string[]> => {

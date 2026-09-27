@@ -76,7 +76,7 @@ import { MAX_BATCH_SLOTS } from "../machiniste/machinisteService";
 import type { SampleIndexRecord } from "../persistence/indexStore";
 import { renderSampleMap } from "./map/mapRender";
 import { MAP_VERSION, ZOOM_STEP } from "./map/mapView";
-import { visibleGlobalPoints } from "./map/visibility";
+import { mapEmptyMessage, visibleGlobalPoints } from "./map/visibility";
 import "./samplemap.css";
 
 /**
@@ -343,20 +343,22 @@ export function renderApp(root: HTMLElement, app: SampleMapApp): void {
 /**
  * Empty-map copy for the Global / My Samples visibility layer.
  *
- * With both toggles off the map is empty BY CHOICE, which must be stated
- * plainly instead of looking like "no samples found". Otherwise the existing
- * search-aware empty message is reused unchanged.
+ * The visibility layer owns every case where the emptiness is caused by the
+ * toggles. When the active sets are non-empty it returns nothing, and the
+ * existing search/analysis empty state is reused unchanged.
  */
 function visibilityEmptyMessage(app: SampleMapApp, visibleCount: number): string {
-  if (visibleCount > 0) return emptyStateMessage(hasActiveSearch(app.searchState));
-  const { global, mine } = app.visibility;
-  if (!global && !mine) {
-    return "Map hidden — enable Global and/or My Samples to show samples.";
-  }
-  if (mine && !app.hasAuthenticatedIdentity) {
-    return "My Samples is on, but the authenticated user is unknown — ownership cannot be determined.";
-  }
-  return emptyStateMessage(hasActiveSearch(app.searchState));
+  return (
+    mapEmptyMessage({
+      toggles: app.visibility,
+      visibleCount,
+      globalPointCount: app.globalPoints.length,
+      mySampleCount: app.mySamples.size,
+      hasIdentity: app.hasAuthenticatedIdentity,
+      hasActiveSearch: hasActiveSearch(app.searchState),
+      resultCount: app.results.length,
+    }) ?? emptyStateMessage(hasActiveSearch(app.searchState))
+  );
 }
 
 /** Input types that support caret selection (number/range inputs do not). */

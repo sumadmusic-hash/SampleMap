@@ -128,6 +128,75 @@ export function visibleGlobalPoints(
   return toggles.global ? (globalPoints ?? []) : [];
 }
 
+/**
+ * Why the map is showing nothing, or `undefined` when the visibility layer has
+ * nothing to say.
+ *
+ * The visibility layer only speaks when the emptiness is CAUSED by the
+ * toggles. When the active sets are non-empty and the map is still bare, the
+ * caller falls back to the ordinary search/analysis empty state — the
+ * visibility layer must not blame the toggles for an unrelated empty map.
+ *
+ * All counts are real, observed values; nothing is estimated here.
+ */
+export function mapEmptyMessage(input: {
+  readonly toggles: Pick<VisibilityToggles, "global" | "mine">;
+  readonly visibleCount: number;
+  /** The global points the app currently holds (viewport-scoped). */
+  readonly globalPointCount: number;
+  /** Size of the authenticated user's complete known sample set. */
+  readonly mySampleCount: number;
+  readonly hasIdentity: boolean;
+  /** Whether a search/filter is currently narrowing the searchable set. */
+  readonly hasActiveSearch: boolean;
+  /** Size of the searchable set — independent of the visibility toggles. */
+  readonly resultCount: number;
+}): string | undefined {
+  // Not empty at all — no visibility message applies.
+  if (input.visibleCount > 0) return undefined;
+
+  const { global, mine } = input.toggles;
+
+  // Both modes disabled: the map is hidden BY CHOICE. This outranks every
+  // other explanation, including a search that also matched nothing — the user
+  // switched the map off, and that is what has to be said.
+  if (!global && !mine) {
+    return "Map hidden — enable Global and/or My Samples to show samples.";
+  }
+
+  // Ownership is undeterminable, so "My Samples" can never contribute. This
+  // outranks the empty-set messages: it is the actionable blocker, and it must
+  // not be reported as "no samples" (samples may well exist).
+  if (mine && !input.hasIdentity) {
+    return "My Samples is on, but the authenticated user is unknown — ownership cannot be determined.";
+  }
+
+  // An active search that matched NOTHING already explains the empty map, and
+  // that explanation is the pre-existing contract ("No samples match your
+  // search."). The visibility layer must not hijack it. This only applies when
+  // the search really came up empty — if it DID match samples and the toggles
+  // filtered them all away, the toggles are the cause and the messages below
+  // are correct.
+  if (input.hasActiveSearch && input.resultCount === 0) return undefined;
+
+  const globalEmpty = input.globalPointCount === 0;
+  const mineEmpty = input.mySampleCount === 0;
+
+  if (global && mine) {
+    if (globalEmpty && mineEmpty) {
+      return "Global and My Samples have no samples available.";
+    }
+    if (globalEmpty) return "Global has no samples available in the current view.";
+    if (mineEmpty) return "My Samples has no samples available.";
+    return undefined;
+  }
+  if (global) {
+    return globalEmpty ? "Global has no samples available in the current view." : undefined;
+  }
+  // Only "My Samples" is on.
+  return mineEmpty ? "My Samples has no samples available." : undefined;
+}
+
 /** A record's content-identity key, matching the `mapPoints()` grouping rule. */
 function recordContentKey(record: SampleIndexRecord): string {
   return record.contentHash

@@ -26,7 +26,9 @@ import {
   ZOOM_STEP,
 } from "./map/mapView";
 import { computeSimilarityFingerprint } from "../similarity/similarityFingerprint";
-import { kickFeatures } from "../classify/test-helpers";
+import { kickFeatures, makeFeatures } from "../classify/test-helpers";
+import { GlobalPublishQueue } from "../global/publishQueue";
+import type { GlobalSampleIndex } from "../global/contract";
 
 const BUILD = "build-v1";
 
@@ -2078,6 +2080,70 @@ describe("SampleMap UI : scan eligibility gating (STEP38)", () => {
       expect(createRunnerCalls).toEqual([]);
     } finally {
       await db.close();
+    }
+  });
+});
+
+describe("SampleMap UI : automatic global population (Step 70)", () => {
+  it("completed analysis run enqueues eligible analyzed records into publish queue", async () => {
+    const handle = await openDb();
+    const fake = makeFakeRunner(defaultProgress({ analyzed: 1 }));
+    const publishProvider: GlobalSampleIndex = {
+      async lookupSamples() { return []; },
+      async lookupContentIdentities() { return []; },
+      async queryMapViewport() { return { mapVersion: "v1", points: [] }; },
+      async publishAnalysisResults() { return { items: [], accepted: true }; },
+    };
+    const publishQueue = new GlobalPublishQueue(publishProvider);
+
+    const app = new SampleMapApp({
+      queue: handle.queue as never,
+      index: handle.index as never,
+      search: { search: vi.fn(async () => []) } as never,
+      preview: new PreviewService(),
+      machiniste: {} as never,
+      createRunner: () => fake.runner,
+      fetchPage: async () => ({ samples: [], nextPageToken: "" }),
+      known: { getUpdatedAt: async () => undefined },
+      previewUrlFor: () => undefined,
+      analysisBuild: BUILD,
+      globalPublishQueue: publishQueue,
+      globalPublishDelivery: "offline",
+    });
+
+    try {
+      // Put a valid analyzed record in index
+      const features = makeFeatures();
+      await handle.index.put(makeSample("samples/a", {
+        primaryClass: "kick",
+        confidence: 0.9,
+        analyzedAt: "2026-03-01T00:00:00.000Z",
+        analysisBuild: BUILD,
+        mapPosition: { x: 0.5, y: 0.5 },
+        contentHash: "a".repeat(64),
+        contentHashVersion: "pcm-v1",
+        analysisSourceFormat: "wav",
+        similarityFingerprint: computeSimilarityFingerprint(features),
+        audioFeatures: features,
+      }));
+
+      expect(publishQueue.pendingCount).toBe(0);
+
+      app.analyze(10);
+      await fake.settle(defaultProgress({ analyzed: 1, stoppedReason: "complete" }));
+
+      // Wait a tick for the async fire-and-forget population to complete
+      await flush();
+      await flush();
+
+      expect(publishQueue.pendingCount).toBe(1);
+      const items = publishQueue.snapshot();
+      expect(items[0].sampleId).toBe("samples/a");
+
+      const rec = await handle.index.get("samples/a");
+      expect(rec?.globalPublish?.delivery).toBe("pending");
+    } finally {
+      await handle.db.close();
     }
   });
 });

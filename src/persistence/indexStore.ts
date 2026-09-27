@@ -137,15 +137,16 @@ export interface SampleIndexRecord {
    */
   similarityFingerprint?: import("../similarity/similarityFingerprint").SimilarityFingerprint;
   /**
-   * Step 16H: LOCAL usage-acceptance / global-publish delivery state.
+   * Step 16H / Step 70: LOCAL usage-acceptance / global-publish delivery state.
    *
    * Option A durability (16G §14): this is a LOCAL, best-effort marker persisted
    * on the existing record — NOT global truth, no new DB/D1 schema, no cloud
    * service, no audio. It records:
-   *   - `usageAcceptedAt` — set once a VERIFIED Machiniste transfer actually
-   *     succeeded for this sampleId (the 16G acceptance boundary). An absent
-   *     `globalPublish` means "not yet usage-accepted".
-   *   - `delivery` — "pending" (accepted, not yet globally stored) or
+   *   - `usageAcceptedAt` — set when a VERIFIED Machiniste transfer succeeded
+   *     for this sampleId, OR when automatic population enqueued the analyzed
+   *     record into the publish pipeline. An absent `globalPublish` means
+   *     "not yet entered into the publish pipeline".
+   *   - `delivery` — "pending" (queued, not yet globally stored) or
    *     "published" (locally noted as delivered; the GlobalSampleIndex remains
    *     the authoritative source of global truth on restart).
    *

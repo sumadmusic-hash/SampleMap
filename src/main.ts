@@ -17,6 +17,7 @@ import {
   flushPendingPublications,
   reconstructPending,
 } from "./global/usageAcceptance";
+import { populatePublishQueue } from "./global/population";
 import { mountAuthenticated } from "./ui/main";
 import { openFirstProject } from "./ui/liveSession";
 
@@ -105,11 +106,18 @@ async function main() {  const sdk = { _status: "unauthenticated" as string };
   if (publishIndex && publishProvider) {
     publishQueue = new GlobalPublishQueue(publishProvider, {});
     try {
-      const enqueued = await reconstructPending({ index: publishIndex, queue: publishQueue });
+      const popResult = await populatePublishQueue({ index: publishIndex, queue: publishQueue });
       if (GLOBAL_WORKER_URL) {
-        log("info", `Global publish: live provider @ ${GLOBAL_WORKER_URL}; ${enqueued} previously-accepted sample(s) re-queued.`);
+        log("info", `Global publish: live provider @ ${GLOBAL_WORKER_URL}; ${popResult.enqueued} newly queued, ${popResult.duplicates} existing.`);
+        // Live boot flush: deliver pending publications immediately
+        try {
+          const delivered = await flushPendingPublications({ index: publishIndex, queue: publishQueue });
+          log("info", `Global publish startup flush: submitted=${delivered.flush.submitted}, succeeded=${delivered.flush.succeeded}, markedPublished=${delivered.markedPublished}`);
+        } catch {
+          /* offline/non-fatal */
+        }
       } else {
-        log("info", `Global publish: OFFLINE provider (no VITE_GLOBAL_WORKER_URL); ${enqueued} previously-accepted sample(s) re-queued pending delivery.`);
+        log("info", `Global publish: OFFLINE provider (no VITE_GLOBAL_WORKER_URL); ${popResult.enqueued} queued pending delivery.`);
       }
     } catch {
       /* non-fatal */

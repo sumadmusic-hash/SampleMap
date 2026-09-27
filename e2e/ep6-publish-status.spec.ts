@@ -39,7 +39,7 @@ test.afterAll(async () => {
 });
 
 test.describe.serial("STEP16R E-P6 publish-status surface (shared page)", () => {
-  test("EP6-01 Additive block: None + offline delivery, local map untouched", async () => {
+  test("EP6-01 Additive block: Pending + offline delivery, local map untouched", async () => {
     await loadSm(page);
 
     // Index + analyze the fixture set once (real pipeline once).
@@ -51,14 +51,16 @@ test.describe.serial("STEP16R E-P6 publish-status surface (shared page)", () => 
     await expect(page.locator(".analysis-status")).toContainText(/Stopped|Idle/, {
       timeout: 30_000,
     });
+    // Wait for the async population to settle
+    await page.waitForFunction(() => (window as any).__sm.publish.queue.pendingCount >= 1);
     await page.evaluate(() => (window as any).__sm.app.refreshSearch());
     await expect(page.locator("[data-testid^='map-point-']")).toHaveCount(4);
 
-    // Never-accepted sample → "None" + offline delivery label.
+    // Auto-populated analyzed sample → "Pending" + offline delivery label.
     await page.evaluate((s) => (window as any).__sm.selectSample(s), KICK);
     await expect(page.locator(".inspector-publish")).toContainText("Global Publish");
     await expect(page.locator("[data-testid='inspector-publish-status']")).toHaveText(
-      "Status: None",
+      "Status: Pending",
     );
     await expect(
       page.locator("[data-testid='inspector-publish-delivery']"),

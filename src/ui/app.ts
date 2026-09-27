@@ -69,8 +69,10 @@ import {
 import type { GlobalPublishQueue } from "../global/publishQueue";
 import {
   acceptUsageAndEnqueue,
+  flushPendingPublications,
   isSendSlotAccepted,
 } from "../global/usageAcceptance";
+import { populatePublishQueue } from "../global/population";
 import type { PublishDeliveryMode } from "./view";
 import {
   createMemoryEp7ConsentStore,
@@ -1035,11 +1037,42 @@ if (this.scanAborted) {
     // This final sync is authoritative — it is the only refresh that must
     // observe every record the run persisted.
     if (typeof this.deps.search?.search === "function") void this.refreshSearch();
+    // Step 70 — automatic global population: a completed run is the trigger
+    // for "local analyzed → publish queue" (offline-first; fire-and-forget so
+    // the analysis result path is never delayed by publish/delivery work).
+    void this.populateGlobalPublishQueue();
   }
 
-  // ------------------------------------------------------------------
-  // Search / filter / sort (§7) — thin pass-through to SearchEngine
-  // ------------------------------------------------------------------
+  /**
+   * Step 70 — feed the EXISTING global publish path from completed analysis.
+   *
+   * Scans the local index for analyzed, publish-eligible records (the single
+   * gate stays `createPublishCandidate`), enqueues them into the existing
+   * `GlobalPublishQueue` and persists the 16H pending marker. When the
+   * bootstrap delivery mode is "live" an immediate best-effort flush drains
+   * the queue (existing retry/backoff applies); offline a flush is NOT
+   * attempted — items stay `pending` (per §2) and are delivered by the next
+   * live session / explicit flush.
+   *
+   * Runs AFTER the analysis run is finished (never in the per-job hot path),
+   * never throws into the analysis UX, and only acts when bootstrap provided
+   * BOTH the local index and the publish queue (live mount / harness).
+   */
+  private async populateGlobalPublishQueue(): Promise<void> {
+    if (!this.deps.index || !this.deps.globalPublishQueue) return;
+    try {
+      const { index, globalPublishQueue } = this.deps;
+      await populatePublishQueue({ index, queue: globalPublishQueue });
+      if (this.globalPublishDeliveryMode === "live") {
+        await flushPendingPublications({ index, queue: globalPublishQueue });
+      }
+    } catch {
+      // Population/delivery must never surface as an analysis failure; the
+      // queue's retry/backoff keeps every item retryable for a later flush.
+    }
+    // Reflect the new/updated publish markers on the read-only status surface.
+    void this.refreshSearch().catch(() => {});
+  }
 
   async setSearch(text: string): Promise<void> {
     this.searchState.text = text;

@@ -265,6 +265,31 @@ export function panBy(camera: MapCamera, dx: number, dy: number): MapCamera {
   return clampPan({ ...camera, panX: camera.panX + dx, panY: camera.panY + dy });
 }
 
+/**
+ * Zoom in by `factor` and centre the given NORMALIZED map coordinate
+ * (a point, or a cluster's centroid) in the viewport.
+ *
+ * The minimal camera addition the cluster interaction needs: it reuses the
+ * existing `toScreen` / `clampZoom` / `clampPan` primitives and introduces NO
+ * new camera state — a cluster click is just another view transform, exactly
+ * like a wheel zoom or a drag pan. Runtime-only: it never touches a sample
+ * coordinate, `audioFeatures` or `mapPosition` output.
+ */
+export function zoomToCenterOn(
+  camera: MapCamera,
+  coord: { x: number; y: number },
+  factor: number = ZOOM_STEP,
+): MapCamera {
+  const zoom = clampZoom(camera.zoom * factor);
+  const base = toScreen(coord, { width: MAP_WIDTH, height: MAP_HEIGHT });
+  // screen = base * zoom + pan, solved for the viewport centre.
+  return clampPan({
+    zoom,
+    panX: MAP_WIDTH / 2 - base.x * zoom,
+    panY: MAP_HEIGHT / 2 - base.y * zoom,
+  });
+}
+
 /** Base-pixel -> screen pixel under the current camera. */
 export function applyCamera(screen: ScreenPosition, camera: MapCamera): ScreenPosition {
   return { x: screen.x * camera.zoom + camera.panX, y: screen.y * camera.zoom + camera.panY };
@@ -528,4 +553,256 @@ export function mergeMapPoints(
     }
   }
   return [...byKey.values()];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOD / CLUSTERING (PoC) — renderable point set for a zoom level
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * CLUSTER / LOD PROOF OF CONCEPT.
+ *
+ * `mapPoints()` already collapses samples by content identity, but the renderer
+ * still emitted one `<circle>` per visible map point. With the automatic
+ * background indexing analysing up to 1000 samples, a zoomed-out map has to
+ * aggregate instead of painting every point.
+ *
+ * This is a PURE, deterministic, O(n) level-of-detail projection: it takes
+ * already-merged `MapPoint[]` plus the current zoom and returns what should be
+ * painted. It runs strictly AFTER `mapPoints()` + `globalMapPoints()` +
+ * `mergeMapPoints()`, so the verified invariants (Global/My visibility,
+ * content-identity dedup, global/local overlap, `representativeSampleId`) are
+ * untouched — clustering only decides how many of those SAME points are drawn.
+ *
+ * Deliberately NOT in this PoC: k-means, force simulation, viewport culling,
+ * animated transitions, cluster-boundary shapes, or any change to the underlying
+ * sample coordinates (`mapPosition`, `analysisV2`, Sound Space are read-only
+ * here). No DOM, no IndexedDB, no audio, no network.
+ */
+
+/**
+ * Screen-space size of one cluster cell, in BASE pixel units. Because the cell
+ * is divided by the zoom below, it covers the same number of SCREEN pixels at
+ * every zoom level — zooming in therefore reveals finer structure inside a
+ * stable on-screen grid.
+ */
+export const CLUSTER_CELL_PX = 80;
+
+/** The same cell in normalized map units at zoom 1 (square in base pixels). */
+export const CLUSTER_CELL_NORM = CLUSTER_CELL_PX / MAP_WIDTH;
+
+/**
+ * Point count below which clustering stays OFF. A small map renders every point
+ * exactly as before, which keeps the existing (verified) map behaviour intact
+ * and confines the PoC to the dense case it is meant for.
+ */
+export const CLUSTER_MIN_POINTS = 24;
+
+/** Cluster dot radius, SCREEN space (never scales with zoom). */
+export const CLUSTER_RADIUS_PX = 9;
+
+/**
+ * Cluster hit radius in screen px, NEVER scaling with zoom.
+ *
+ * Deliberately larger than a point's hit radius (13px): a cluster stands for
+ * many samples, so its whole painted area — plus a margin — is the target the
+ * user aims at. A cluster and a point never share a cell, so this radius can
+ * never make one shadow the other.
+ */
+export const CLUSTER_HIT_RADIUS_PX = 18;
+
+/**
+ * Normalized cell size for a zoom level: LARGE cells when zoomed out, small
+ * cells when zoomed in. Zoom 1 -> the full 80px grid; zoom 8 -> 1/8 of it, i.e.
+ * fine enough that a few hundred points practically never share a cell.
+ */
+export function clusterCellSize(zoom: number): number {
+  return CLUSTER_CELL_NORM / clampZoom(zoom);
+}
+
+/** A cell that holds exactly ONE point: rendered as the point itself. */
+export interface MapPointEntry {
+  kind: "point";
+  point: MapPoint;
+}
+
+/**
+ * A cell that holds SEVERAL points, collapsed into one renderable entry.
+ *
+ * IMPORTANT: a cluster is NOT a sample. It deliberately has no `sampleId` (and
+ * therefore cannot be selected, previewed or persisted as one); the members it
+ * stands for stay reachable through `points`.
+ */
+export interface MapCluster {
+  kind: "cluster";
+  /** Normalized centroid of the members — where the cluster dot is drawn. */
+  x: number;
+  y: number;
+  /** Number of member map points (e.g. 3, 17, 42). */
+  count: number;
+  /** The member points, in a deterministic order. */
+  points: readonly MapPoint[];
+  /** Stable `"col:row"` cell key — also the cluster's DOM/test handle. */
+  cell: string;
+}
+
+/** One renderable entry of the map: either a point or a cluster. */
+export type MapEntry = MapPointEntry | MapCluster;
+
+/** The normalized coordinate an entry is drawn / hit-tested at. */
+export function entryAnchor(entry: MapEntry): { x: number; y: number } {
+  return entry.kind === "point" ? entry.point : entry;
+}
+
+/** Total number of original map points represented by a set of entries. */
+export function entryCoverage(entries: readonly MapEntry[]): number {
+  let n = 0;
+  for (const e of entries) n += e.kind === "point" ? 1 : e.count;
+  return n;
+}
+
+/**
+ * Separator between the content identity and the sample id in a member key.
+ *
+ * ASCII US (0x1f): a control character that occurs in neither a content hash
+ * nor a path segment, so the joined key is unambiguous. Written via
+ * `String.fromCharCode` to keep this source file free of literal control
+ * bytes.
+ */
+const MEMBER_KEY_SEPARATOR = String.fromCharCode(0x1f);
+
+/** Stable, input-order-independent sort key of a member point. */
+function memberKey(p: MapPoint): string {
+  return contentIdentityKey(p.contentIdentity) + MEMBER_KEY_SEPARATOR + p.sampleId;
+}
+
+/**
+ * Collapse map points into the renderable set for a zoom level.
+ *
+ * Deterministic uniform GRID in map space: a point falls into the cell
+ * `floor(x / cell), floor(y / cell)`, and every cell that ends up with more than
+ * one point becomes a single cluster whose position is the members' centroid.
+ *
+ * Properties that matter and are pinned by the tests:
+ *  - deterministic and reproducible: the output order and the member order are
+ *    sorted by stable keys, so a shuffled input yields an identical result;
+ *  - O(n): one pass to bin, one pass to emit, plus per-cell sorts;
+ *  - lossless in COUNT: every input point is either drawn itself or counted in
+ *    exactly one cluster — nothing is dropped and no coordinate is rewritten;
+ *  - progressive: cells shrink as the zoom grows, so a cluster resolves into
+ *    several points (or smaller clusters) by zooming in.
+ *
+ * Runs strictly after the existing `mapPoints()` + `globalMapPoints()` +
+ * `mergeMapPoints()` pipeline and never reorders or alters those points.
+ */
+export function clusterMapPoints(
+  points: readonly MapPoint[],
+  zoom: number,
+): MapEntry[] {
+  if (points.length < CLUSTER_MIN_POINTS) {
+    return points.map((point) => ({ kind: "point", point }) as const);
+  }
+
+  const cell = clusterCellSize(zoom);
+  const cells = new Map<string, { col: number; row: number; members: MapPoint[] }>();
+  for (const p of points) {
+    // Coordinates are normalized to [0,1]; floor() keeps the right-most /
+    // bottom-most edge in its own cell instead of merging it back into the
+    // last full cell.
+    const col = Math.floor(p.x / cell);
+    const row = Math.floor(p.y / cell);
+    const key = `${col}:${row}`;
+    let bucket = cells.get(key);
+    if (!bucket) {
+      bucket = { col, row, members: [] };
+      cells.set(key, bucket);
+    }
+    bucket.members.push(p);
+  }
+
+  const placed: Array<{ col: number; row: number; entry: MapEntry }> = [];
+  for (const [key, bucket] of cells) {
+    if (bucket.members.length === 1) {
+      placed.push({
+        col: bucket.col,
+        row: bucket.row,
+        entry: { kind: "point", point: bucket.members[0] },
+      });
+      continue;
+    }
+    // Sort the members before averaging: floating-point addition is not
+    // associative, so a stable member order is what makes the centroid
+    // bit-identical regardless of the input order.
+    const members = [...bucket.members].sort((a, b) =>
+      memberKey(a) < memberKey(b) ? -1 : memberKey(a) > memberKey(b) ? 1 : 0,
+    );
+    let sx = 0;
+    let sy = 0;
+    for (const m of members) {
+      sx += m.x;
+      sy += m.y;
+    }
+    placed.push({
+      col: bucket.col,
+      row: bucket.row,
+      entry: {
+        kind: "cluster",
+        cell: key,
+        x: sx / members.length,
+        y: sy / members.length,
+        count: members.length,
+        points: members,
+      },
+    });
+  }
+
+  // Spatial order (column-major), independent of the order the points arrived
+  // in. Every entry carries its cell, so the comparator is total.
+  placed.sort((a, b) => (a.col !== b.col ? a.col - b.col : a.row - b.row));
+  return placed.map((p) => p.entry);
+}
+
+/** What a hit-test found: a single point, or a cluster (never a member). */
+export type MapEntryHit =
+  | { kind: "point"; point: MapPoint }
+  | { kind: "cluster"; cluster: MapCluster };
+
+/**
+ * Camera-aware hit-test over the RENDERED entries.
+ *
+ * Unlike `pointAt()` — which would happily return a member of a collapsed
+ * cluster and select an invisible sample — this distinguishes the two cases
+ * explicitly: a point hit keeps the existing behaviour, a cluster hit can only
+ * ever be a cluster, never one of its (currently undrawn) members.
+ *
+ * Tie-break mirrors `pointAt()`: nearest wins, and on an exact distance tie the
+ * LAST entry wins, because the renderer appends entries in exactly this order
+ * and the last one is painted on top.
+ */
+export function entryAt(
+  entries: readonly MapEntry[],
+  pointer: ScreenPosition,
+  camera: MapCamera,
+  pointRadiusPx: number = POINT_HIT_RADIUS_PX,
+  clusterRadiusPx: number = CLUSTER_HIT_RADIUS_PX,
+): MapEntryHit | undefined {
+  let best: { distance: number; hit: MapEntryHit } | undefined;
+  for (const entry of entries) {
+    const isCluster = entry.kind === "cluster";
+    const screen = applyCamera(
+      toScreen(entryAnchor(entry), { width: MAP_WIDTH, height: MAP_HEIGHT }),
+      camera,
+    );
+    const d = Math.hypot(screen.x - pointer.x, screen.y - pointer.y);
+    const radius = isCluster ? clusterRadiusPx : pointRadiusPx;
+    if (d <= radius && (best === undefined || d <= best.distance)) {
+      best = {
+        distance: d,
+        hit: isCluster
+          ? { kind: "cluster", cluster: entry }
+          : { kind: "point", point: entry.point },
+      };
+    }
+  }
+  return best?.hit;
 }

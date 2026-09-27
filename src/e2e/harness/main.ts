@@ -628,6 +628,18 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
        */
       global: {
         mirrorRecord: (sampleId: string) => Promise<GlobalMapPoint>;
+        /**
+         * Serve `count` SYNTHETIC global map points and refresh.
+         *
+         * The LOD/clustering PoC needs a map far denser than the 4 fixture
+         * records. `mirrorRecord` can only ever serve persisted records, so
+         * this hook manufactures points on a deterministic lattice-plus-jitter
+         * (no `Math.random`, so every run is byte-identical) with unique
+         * content identities. They arrive through the normal
+         * `queryMapViewport` -> `globalMapPoints()` path, so the clustering
+         * layer sees exactly what production sees.
+         */
+        serveMany: (count: number) => Promise<GlobalMapPoint[]>;
         clear: () => Promise<void>;
         current: () => GlobalMapPoint[];
       };
@@ -809,6 +821,37 @@ setAllOffline: () => publishProvider.setAllOffline(),
           publishProvider.setMapPoints([point]);
           await app.refreshGlobalPoints();
           return point;
+        },
+        /**
+         * Serve `count` synthetic global map points (see the type doc) and
+         * refresh the app. Returns the served points.
+         */
+        serveMany: async (count: number): Promise<GlobalMapPoint[]> => {
+          const points: GlobalMapPoint[] = [];
+          // Deterministic lattice + jitter: dense enough that the zoomed-out
+          // map MUST cluster, spread enough that it also resolves on zoom-in.
+          const side = Math.max(1, Math.ceil(Math.sqrt(count)));
+          for (let i = 0; i < count; i++) {
+            const col = i % side;
+            const row = Math.floor(i / side);
+            const jx = ((i * 2654435761) % 1000) / 1000;
+            const jy = ((i * 40503) % 1000) / 1000;
+            const x = (col + 0.15 + 0.7 * jx) / side;
+            const y = (row + 0.15 + 0.7 * jy) / side;
+            points.push({
+              contentIdentity: {
+                contentHash: `synthetic-${String(i).padStart(4, "0")}`,
+                contentHashVersion: "pcm-v1",
+              },
+              x: Math.min(1, Math.max(0, x)),
+              y: Math.min(1, Math.max(0, y)),
+              representativeSampleId: `samples/synthetic-${String(i).padStart(4, "0")}`,
+              primaryClass: "kick",
+            });
+          }
+          publishProvider.setMapPoints(points);
+          await app.refreshGlobalPoints();
+          return points;
         },
         /** Drop all fixture global points and refresh. */
         clear: async (): Promise<void> => {

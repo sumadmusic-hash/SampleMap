@@ -460,6 +460,37 @@ button.analysis-budget-btn {
   stroke-width: 2;
 }
 
+/* ---- Cluster / LOD (PoC) ---------------------------------------------- */
+
+/* A cluster stands for SEVERAL samples: it is deliberately a neutral, solid
+   dot rather than a class colour, so it can never be read as one sample's
+   classification. Clicking it zooms, it never selects. */
+.map-cluster {
+  cursor: zoom-in;
+}
+
+.map-cluster-dot {
+  fill: var(--text-tertiary);
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+
+/* The count rides on the dot, so it needs its own halo to stay readable over
+   the map background. */
+.map-cluster-count {
+  fill: var(--text-primary);
+  paint-order: stroke;
+  stroke: var(--bg-map);
+  stroke-width: 0.6;
+  user-select: none;
+  pointer-events: none;
+}
+
+.map-cluster-hovered .map-cluster-dot {
+  fill: var(--hover);
+  stroke-width: 2;
+}
+
 /* ----------------------------------------------------------------------------
    STEP24 — V2 Sound Space panel: deterministic 2-D acoustic scatter surface.
    Reuses the existing samplemap design tokens; no new visual grammar.

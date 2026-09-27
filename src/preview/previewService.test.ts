@@ -390,4 +390,124 @@ describe("PreviewService — in-flight fetch vs dispose (SM-AUDIT-007)", () => {
     await expect(p1).rejects.toThrow("preview service disposed");
     expect(svc.cachedCount()).toBe(0);
   });
+
+  it("activeCount never goes negative when a fetch settles after dispose()", async () => {
+    const { api } = makeBlobUrlApi();
+    const { fetchFn, calls } = makeFetch();
+    const svc = new PreviewService({ blobUrl: api, fetchFn, maxCacheSize: 8 });
+
+    const p1 = svc.preview("samples/1", "https://e/1.mp3");
+    const p2 = svc.preview("samples/2", "https://e/2.mp3");
+    const p3 = svc.preview("samples/3", "https://e/3.mp3");
+    expect(svc.activeCount()).toBe(3);
+
+    // dispose() zeroes the counter while all three fetches are still running.
+    svc.dispose();
+    expect(svc.activeCount()).toBe(0);
+
+    // Every in-flight fetch now settles and runs its `finally` block.
+    calls[0].resolve();
+    calls[1].resolve();
+    calls[2].resolve();
+    await expect(p1).rejects.toThrow("preview service disposed");
+    await expect(p2).rejects.toThrow("preview service disposed");
+    await expect(p3).rejects.toThrow("preview service disposed");
+
+    // The bug: `active--` in the finally block drove the counter below zero.
+    expect(svc.activeCount()).toBe(0);
+    expect(svc.activeCount()).toBeGreaterThanOrEqual(0);
+  });
+
+  it("a rejected in-flight fetch after dispose() also leaves activeCount at 0", async () => {
+    const { api } = makeBlobUrlApi();
+    const calls: Array<{ url: string; fail: (e: Error) => void }> = [];
+    const fetchFn: PreviewFetch = (url) =>
+      new Promise((_resolve, reject) => {
+        calls.push({ url, fail: reject });
+      });
+    const svc = new PreviewService({ blobUrl: api, fetchFn, maxCacheSize: 8 });
+
+    const pending = svc.preview("samples/1", "https://e/1.mp3");
+    expect(svc.activeCount()).toBe(1);
+    svc.dispose();
+    calls[0].fail(new Error("network down"));
+    await expect(pending).rejects.toThrow("network down");
+    expect(svc.activeCount()).toBe(0);
+  });
+});
+
+// ─── STEP78: the preview fetch must not populate the HTTP disk cache ──────────
+
+describe("PreviewService — no HTTP disk cache for preview audio (STEP78)", () => {
+  it("the default browser fetch passes cache: 'no-store' and nothing else", async () => {
+    const fetchSpy = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => ({
+      blob: async () => ({ type: "audio/mpeg", size: 1 } as PreviewBlob),
+    }));
+    // No fetchFn injected -> the production default (plain global fetch) is used.
+    const { api } = makeBlobUrlApi();
+    const svc = new PreviewService({ blobUrl: api, maxCacheSize: 8 });
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof globalThis.fetch;
+    try {
+      const handle = await svc.preview("samples/a", "https://e/a.mp3");
+      expect(handle.url).toBe("blob:file-0");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledWith("https://e/a.mp3", { cache: "no-store" });
+    const init = fetchSpy.mock.calls[0][1];
+    expect(init).toBeDefined();
+    // No alternative cache strategy and no extra options that could persist audio.
+    expect(Object.keys(init!)).toEqual(["cache"]);
+    expect(init!.cache).toBe("no-store");
+  });
+
+  it("the service itself passes cache: 'no-store' to the injected fetch impl", async () => {
+    // Pins the call site itself, so the policy is enforced by PreviewService
+    // regardless of which fetch implementation is plugged in.
+    const seen: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const fetchFn: PreviewFetch = (url, init) => {
+      seen.push({ url, init });
+      return Promise.resolve({
+        blob: async () => ({ type: "audio/mpeg", size: 1 } as PreviewBlob),
+      });
+    };
+    const { api } = makeBlobUrlApi();
+    const svc = new PreviewService({ blobUrl: api, fetchFn, maxCacheSize: 8 });
+    await Promise.all([
+      svc.preview("samples/1", "https://e/1.mp3"),
+      svc.preview("samples/2", "https://e/2.mp3"),
+      svc.preview("samples/3", "https://e/3.mp3"),
+    ]);
+    expect(seen).toHaveLength(3);
+    for (const call of seen) {
+      expect(call.init).toEqual({ cache: "no-store" });
+      expect(Object.keys(call.init as RequestInit)).toEqual(["cache"]);
+    }
+  });
+
+  it("every in-flight preview fetch carries cache: 'no-store' (default fetch path)", async () => {
+    const fetchSpy = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => ({
+      blob: async () => ({ type: "audio/mpeg", size: 1 } as PreviewBlob),
+    }));
+    const { api } = makeBlobUrlApi();
+    const svc = new PreviewService({ blobUrl: api, maxCacheSize: 8 });
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof globalThis.fetch;
+    try {
+      await Promise.all([
+        svc.preview("samples/1", "https://e/1.mp3"),
+        svc.preview("samples/2", "https://e/2.mp3"),
+        svc.preview("samples/3", "https://e/3.mp3"),
+      ]);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    for (const call of fetchSpy.mock.calls) {
+      expect(call[1]).toEqual({ cache: "no-store" });
+    }
+  });
 });

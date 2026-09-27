@@ -62,6 +62,7 @@ export interface BlobUrlApi {
 
 export type PreviewFetch = (
   url: string,
+  init?: RequestInit,
 ) => Promise<{ blob(): Promise<PreviewBlob> }>;
 
 export interface PreviewServiceOptions {
@@ -113,7 +114,13 @@ export class PreviewService {
         createObjectURL: (b) => URL.createObjectURL(b as Blob),
         revokeObjectURL: (u) => URL.revokeObjectURL(u),
       };
-    this.fetchFn = opts.fetchFn ?? ((url) => fetch(url));
+    // STEP78 — the preview audio must not land in the browser's HTTP disk
+    // cache: the CDN serves the preview URLs with `Cache-Control: public,
+    // max-age=86400`, so a plain `fetch(url)` would persist every preview
+    // permanently. Same rule as the analysis path
+    // (`browserFetchAudio` in `src/ui/bootstrap.ts`). The blob stays transient
+    // in memory and is only ever reachable through an Object URL.
+    this.fetchFn = opts.fetchFn ?? ((url) => fetch(url, { cache: "no-store" }));
     this.now = opts.now ?? (() => Date.now());
     this.audioFactory = opts.audioFactory ?? ((src) => new Audio(src));
   }
@@ -139,7 +146,7 @@ export class PreviewService {
       const run = async () => {
         this.active++;
         try {
-          const resp = await this.fetchFn(sourceUrl);
+          const resp = await this.fetchFn(sourceUrl, { cache: "no-store" });
           const blob = await resp.blob();
           const objectUrl = this.blobUrl.createObjectURL(blob);
           // SM-AUDIT-007 (stale async): a fetch that completes after the service
@@ -158,7 +165,11 @@ export class PreviewService {
         } catch (e) {
           reject(e);
         } finally {
-          this.active--;
+          // A slot is only released if dispose() has not already reset the
+          // counter: dispose() zeroes `active`, so a naive `active--` here
+          // would drive the counter negative and permanently break the
+          // concurrency limit for later (re-)use of the service.
+          if (!this.disposed) this.active--;
           this.pump();
         }
       };
@@ -281,6 +292,9 @@ export class PreviewService {
     // them are not left hanging after teardown.
     for (const q of this.queue) q.reject(new Error("preview service disposed"));
     this.queue.length = 0;
+    // Every slot is released by the teardown itself; the `finally` blocks of
+    // the still-running fetches deliberately skip their own `active--` once
+    // `disposed` is set, so the counter cannot go negative.
     this.active = 0;
   }
 

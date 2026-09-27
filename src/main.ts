@@ -1,9 +1,8 @@
 import { audiotool } from "@audiotool/nexus";
 import type { AudiotoolClient } from "@audiotool/nexus";
-import type { SampleMeta, SampleFormat } from "@audiotool/nexus/api";
+import type { SampleMeta } from "@audiotool/nexus/api";
 import {
   summarizeSample,
-  formatLabel,
   listSamplesPageByPage,
   checkAvailability,
 } from "./sample-api";
@@ -66,12 +65,6 @@ function makePre(id: string): HTMLPreElement {
   const pre = document.createElement("pre");
   pre.id = id;
   return pre;
-}
-
-function makeAudio(): HTMLAudioElement {
-  const a = document.createElement("audio");
-  a.controls = true;
-  return a;
 }
 
 /**
@@ -274,29 +267,6 @@ async function runSamplePoc(
   const metaPre = makePre("sample-meta");
   logEl.appendChild(metaPre);
 
-  const dowloadRow = document.createElement("div");
-  dowloadRow.className = "row";
-  const formats: SampleFormat[] = ["wav", "flac", "mp3", "preview"];
-  const dlButtons: Record<string, HTMLButtonElement> = {};
-  for (const f of formats) {
-    const b = makeButton(`dl-${f}`, `Download ${formatLabel(f)}`);
-    b.disabled = true;
-    dlButtons[f] = b;
-    dowloadRow.appendChild(b);
-  }
-  logEl.appendChild(dowloadRow);
-
-  const dlPre = makePre("download-log");
-  logEl.appendChild(dlPre);
-
-  const playLabel = document.createElement("div");
-  playLabel.className = "row";
-  playLabel.textContent = "Playback:";
-  logEl.appendChild(playLabel);
-  const audio = makeAudio();
-  audio.id = "playback";
-  logEl.appendChild(audio);
-
   let current: SampleMeta | null = null;
 
   async function loadSample() {
@@ -317,9 +287,6 @@ async function runSamplePoc(
       const av = checkAvailability(meta);
       log("info", `WAV=${av?.wav} FLAC=${av?.flac} MP3=${av?.mp3} Preview=${av?.preview}`);
 
-      for (const f of formats) {
-        dlButtons[f].disabled = av ? !av[f] : true;
-      }
       machBtn.disabled = false;
       machPre.textContent = "";
     } catch (e) {
@@ -329,36 +296,6 @@ async function runSamplePoc(
   }
 
   loadBtn.onclick = loadSample;
-
-  async function download(format: SampleFormat) {
-    if (!current) return;
-    dlPre.textContent = "";
-    const label = formatLabel(format);
-    logSection(`Download ${format} for ${current.name}`);
-    try {
-      const blob = await at.samples.download(current, { format });
-      if (blob instanceof Error) {
-        log("err", `${label} download: FAILED — ${blob.message}`);
-        return;
-      }
-      log("ok", `${label} download: SUCCESS`);
-      log("info", `Bytes: ${blob.size}  Type: ${blob.type || "unknown"}`);
-
-      const url = URL.createObjectURL(blob);
-      log("ok", `Audio Blob: SUCCESS (ObjectURL created, length=${blob.size})`);
-      audio.src = url;
-      audio.load();
-      log("ok", "Audio playback element: LOADED");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      log("err", `${label} download: FAILED — ${msg}`);
-    }
-  }
-
-  dlButtons.wav.onclick = () => download("wav");
-  dlButtons.flac.onclick = () => download("flac");
-  dlButtons.mp3.onclick = () => download("mp3");
-  dlButtons.preview.onclick = () => download("preview");
 
   // Minimal Machiniste integration test (opt-in; mutates a real project).
   const machRow = document.createElement("div");
@@ -479,36 +416,6 @@ async function runSamplePoc(
   }
 
   machBtn.onclick = runMachinisteTest;
-
-  // Minimal auto real-access test surface (runs after login).
-  // Picks a public sample that is plausibly from another user (owner differs
-  // from the first sample's owner, when more than one owner is present), then
-  // exercises get() + download() across all formats the sample supports.
-  async function autoRunRealTest() {
-    logSection("Real access auto-test");
-    if (sampleList.length === 0) {
-      log("warn", "No samples to test.");
-      return;
-    }
-    const firstOwner = sampleList[0].ownerName;
-    const candidate =
-      sampleList.find((s) => s.visibility === "public" && s.ownerName !== firstOwner) ??
-      sampleList[0];
-    select.value = String(sampleList.indexOf(candidate));
-    await loadSample();
-    if (!current) return;
-    log("info", `Testing sample: ${current.name} (owner=${current.ownerName}, visibility=${current.visibility})`);
-    const av = checkAvailability(current);
-    const formatsToTry: SampleFormat[] = ["wav"];
-    if (av?.flac) formatsToTry.push("flac");
-    if (av?.mp3) formatsToTry.push("mp3");
-    if (av?.preview) formatsToTry.push("preview");
-    for (const f of formatsToTry) {
-      await download(f);
-    }
-  }
-
-  await autoRunRealTest();
 }
 
 main().catch((e) => {

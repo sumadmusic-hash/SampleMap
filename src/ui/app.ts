@@ -485,6 +485,16 @@ const GLOBAL_REFRESH_DEBOUNCE_MS = 250;
  */
 const ANALYSIS_LIVE_REFRESH_MS = 500;
 
+/**
+ * Budget of the AUTOMATIC background run started when the app is opened.
+ *
+ * 1000 is one of the three INV-3 budgets (10/100/1000) and is still enforced by
+ * the `JobRunner`, so the automatic run stays a BOUNDED run — it is not
+ * unbounded processing. A session constant: never configurable, never
+ * persisted, and never widened by the automatic workflow.
+ */
+export const BACKGROUND_INDEXING_BUDGET: AnalysisBudget = 1000;
+
 /** Step 16L: distinguishable global-map UI states. */
 export type GlobalMapState = "idle" | "loading" | "ok" | "empty" | "error";
 
@@ -699,6 +709,23 @@ export class SampleMapApp {
   private analysisLiveTimer: ReturnType<typeof setTimeout> | undefined;
   private analysisLiveDisposed = false;
 
+  /**
+   * Whether the AUTOMATIC background indexing run was already started for this
+   * app instance. Session state only (never persisted) and the single guard
+   * against a duplicate automatic scan+analysis run.
+   */
+  private backgroundIndexingStarted = false;
+
+  /**
+   * True once the automatic background indexing was started for this instance
+   * (whether it is still running or already finished). Exposed so the UI, the
+   * tests and the e2e harness can observe the automatic workflow without
+   * reaching into private state.
+   */
+  get backgroundIndexingTriggered(): boolean {
+    return this.backgroundIndexingStarted;
+  }
+
   /** STEP19A E-P7 — the one-time consent store (default: safe in-memory). */
   private readonly consentStore: Ep7ConsentStore;
   /** STEP19A E-P7 — true while the consent dialog is showing. */
@@ -873,6 +900,49 @@ if (this.scanAborted) {
     );
     this.notify();
     return this.runner;
+  }
+
+  /**
+   * AUTOMATIC background indexing — the NORMAL product path.
+   *
+   * Opening the app is enough: it scans the library and then analyses whatever
+   * is due, so the user never has to press "Start Scan" and then "Analyse N"
+   * first. The manual controls stay available as the technical/debug fallback.
+   *
+   * This is pure ORCHESTRATION of the existing `startScan()` + `analyze()`: no
+   * eligibility rule, budget rule, queue rule or pipeline step is duplicated
+   * here. The mount calls it WITHOUT awaiting (`void app.startBackgroundIndexing()`),
+   * so the UI is interactive while it runs and the mount never blocks on the
+   * scan, let alone on the analysis run. Individual results keep appearing live
+   * on the map through the existing per-job refresh.
+   */
+  async startBackgroundIndexing(): Promise<void> {
+    // MEHRACHSTART: exactly one automatic run per app instance, no matter how
+    // often this is called. The existing `startScan()` / `analyze()` reentrancy
+    // guards still apply on top, so neither a parallel scan nor a parallel
+    // analysis run can be started from here.
+    if (this.backgroundIndexingStarted) return;
+    this.backgroundIndexingStarted = true;
+
+    await this.startScan();
+
+    // A scan owned by someone else (a manual "Start Scan" click that won the
+    // race against this automatic start) is still enqueueing. Starting the
+    // analysis now would analyse a half-discovered queue and leave the rest
+    // stranded, so the manual flow keeps ownership of this round.
+    if (this.scan.status === "scanning") return;
+
+    // Analyse only when there is genuinely DUE work. `nextDue` covers both the
+    // jobs this scan just enqueued AND jobs a previous session left behind (an
+    // interrupted run, or a library that is still only partially analysed) —
+    // without it, reopening the app could never finish that work. Already
+    // analysed samples are not due and are therefore never analysed again
+    // (existing queue idempotency: `enqueue` returns "existing" for a
+    // completed job of the same build).
+    const due = await this.deps.queue.nextDue(1);
+    if (due.length === 0) return;
+
+    this.analyze(BACKGROUND_INDEXING_BUDGET);
   }
 
   /** Request a clean pause (current in-flight job finishes; nothing is lost). */

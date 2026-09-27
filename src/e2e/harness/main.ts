@@ -588,6 +588,15 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
       machinisteId: string;
       scan: () => Promise<void>;
       analyze: (budget?: AnalysisBudget) => Promise<void>;
+      /**
+       * The AUTOMATIC background indexing entry point — the exact call the
+       * production mount (`mountAuthenticated`) makes after its initial
+       * `refreshSearch()`. Exposed so the e2e suite can observe the normal
+       * "open the app and it indexes itself" path WITHOUT clicking Start Scan.
+       * Not wired into the harness mount itself: the other suites drive the
+       * manual scan/analyze flow and assert on the idle state.
+       */
+      autoIndex: () => Promise<void>;
       readRecords: typeof readRecords;
       sendToMachiniste: typeof sendToMachiniste;
       selectSample: (sampleId: string) => void;
@@ -670,6 +679,11 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
           app.analyze(budget);
           await waitForSettle(() => app.analysis.status);
         }
+      },
+      autoIndex: async () => {
+        // Fire-and-forget, exactly like the mount: do NOT wait for the scan or
+        // the run, so the e2e sees the non-blocking behaviour too.
+        void app.startBackgroundIndexing();
       },
       readRecords,
       sendToMachiniste,

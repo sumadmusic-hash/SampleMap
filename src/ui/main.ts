@@ -23,6 +23,10 @@ import type { PublishDeliveryMode } from "./view";
  *   const deps = await buildBrowserDeps({ client, doc, globalIndex: provider });
  *   const app = mountSampleMap(document.getElementById("app")!, deps);
  *   await app.refreshSearch();
+ *
+ * `mountAuthenticated` additionally starts the AUTOMATIC background indexing
+ * (scan, then analyse the due jobs within the 1000 budget) without awaiting it,
+ * so the app is usable immediately and fills itself in the background.
  */
 export async function mountAuthenticated(
   root: HTMLElement,
@@ -46,5 +50,11 @@ export async function mountAuthenticated(
   await app.refreshSearch();
   // Step 16K: load global map points when a global index is configured.
   if (opts.globalIndex) void app.refreshGlobalPoints();
+  // NORMAL PRODUCT PATH: opening the app starts indexing in the background, so
+  // the user no longer has to press "Start Scan" and then "Analyse N" first.
+  // Fire-and-forget on purpose — the mount must not wait for the scan, let
+  // alone for the whole analysis run. The orchestrator sequences the existing
+  // `startScan()` + `analyze()` and is a no-op when it was already started.
+  void app.startBackgroundIndexing();
   return app;
 }

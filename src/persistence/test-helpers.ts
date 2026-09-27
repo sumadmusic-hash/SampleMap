@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 import { openDatabase, DatabaseHandle } from "./db";
 import { SampleIndexRecord } from "./indexStore";
+import { computeSimilarityFingerprint } from "../similarity/similarityFingerprint";
 
 let counter = 0;
 
@@ -52,6 +53,29 @@ export function makeSample(
     analyzedAt: "2026-01-01T00:00:00.000Z",
     analysisBuild: "build-v1",
     status: "analyzed",
+    ...overrides,
+  };
+}
+
+/**
+ * STEP80 test-only: complete an analyzed record into a publish-eligible one
+ * (the fields the pipeline persists alongside the analysis and that
+ * `createPublishCandidate` requires). Lives here so several suites can reuse
+ * it without duplicating the field set.
+ */
+export function withPublishFields(
+  record: SampleIndexRecord,
+  overrides: Partial<SampleIndexRecord> = {},
+): SampleIndexRecord {
+  return {
+    ...record,
+    analysisSourceFormat: "wav",
+    fileHash: "a".repeat(64),
+    contentHash: "f".repeat(64),
+    contentHashVersion: "pcm-v1",
+    // The publish validator cross-checks the fingerprint against the RECORD's
+    // features — derive it from exactly those, not from a generic fixture.
+    similarityFingerprint: computeSimilarityFingerprint(record.audioFeatures),
     ...overrides,
   };
 }

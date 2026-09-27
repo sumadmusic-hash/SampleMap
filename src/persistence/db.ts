@@ -11,19 +11,24 @@ import { CollectionStore, IndexedDBCollectionStore } from "./collectionStore";
  *
  * v3 (STEP28): adds the dedicated `collections` object store (keyPath "id")
  * that persists Sound Collections as metadata + sampleId references only.
+ * v4 (STEP80): adds the tiny `meta` object store (plain out-of-line keys) that
+ * holds bookkeeping records ONLY — currently the public-discovery cursor
+ * (`lastPageToken`, `rounds`, `cursorVersion`). NO sample data, NO audio.
  */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const STORES = {
   samples: "samples",
   jobs: "jobs",
   collections: "collections",
+  meta: "meta",
 } as const;
 
 export interface DatabaseHandle {
   index: IndexStore;
   queue: QueueStore;
   collections: CollectionStore;
+  /** STEP80 — shared IndexedDB handle (also hosts the `meta` discovery store). */
   db: ElasticDB;
 }
 
@@ -57,6 +62,11 @@ export async function openDatabase(
         keyPath: "id",
       });
       collections.createIndex("updatedAt", "updatedAt", { unique: false });
+
+      // v4 schema from scratch: the meta store exists immediately.
+      if (!idb.objectStoreNames.contains(STORES.meta)) {
+        idb.createObjectStore(STORES.meta);
+      }
     }
     // --- v1 -> v2 migration: add an owner index on samples ---
     if (oldVersion < 2 && oldVersion >= 1) {
@@ -72,6 +82,14 @@ export async function openDatabase(
           keyPath: "id",
         });
         collections.createIndex("updatedAt", "updatedAt", { unique: false });
+      }
+    }
+    // --- v3 -> v4 migration (STEP80): add the meta store ---
+    // Discovery bookkeeping ONLY (out-of-line keys, no index needed). Existing
+    // data in samples/jobs/collections is untouched by this branch.
+    if (oldVersion < 4 && oldVersion >= 3) {
+      if (!tx.objectStoreNames.contains(STORES.meta)) {
+        idb.createObjectStore(STORES.meta);
       }
     }
   });

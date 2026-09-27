@@ -245,6 +245,9 @@ export async function buildBrowserDeps(opts: {
     createRunner,
     fetchPage: pageFetcher,
     known,
+    // STEP80 — reuse the SAME already-opened IndexedDB handle for the tiny
+    // public-discovery cursor store (never a second database).
+    dbForDiscovery: stores.db,
     previewUrlFor,
     analysisBuild,
     scanMaxSamples,

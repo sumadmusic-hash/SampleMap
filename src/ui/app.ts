@@ -73,6 +73,8 @@ import {
   isSendSlotAccepted,
 } from "../global/usageAcceptance";
 import { populatePublishQueue } from "../global/population";
+import { discoverPublicSamples } from "../library/publicDiscovery";
+import type { ElasticDB } from "../persistence/elasticdb";
 import type { PublishDeliveryMode } from "./view";
 import {
   createMemoryEp7ConsentStore,
@@ -456,6 +458,13 @@ export interface SampleMapAppDeps {
    * honestly surfaces "persistence unavailable" without crashing.
    */
   collectionStore?: CollectionStore;
+  /**
+   * STEP80 — shared IndexedDB handle hosting the tiny `meta` discovery-cursor
+   * store. OPTIONAL: when absent, public discovery is simply skipped (the app
+   * behaves exactly as before). Wired by the browser bootstrap from the stores
+   * it already opens — never a second database.
+   */
+  dbForDiscovery?: ElasticDB;
 }
 
 /** STEP62 — page size for the dedicated own‑upload discovery pass. */
@@ -928,6 +937,14 @@ if (this.scanAborted) {
 
     await this.startScan();
 
+    // STEP80 — public discovery runs BEFORE the due-work check and OUTSIDE the
+    // scan/analyse ownership logic: newly discovered public samples are now in
+    // the queue, so a session that would otherwise find "nothing due" still
+    // starts the existing analysis for them. Fire-and-forget on purpose: a
+    // failing/slow listing round must never break or block the normal
+    // background indexing path.
+    void this.runPublicDiscoveryRound();
+
     // A scan owned by someone else (a manual "Start Scan" click that won the
     // race against this automatic start) is still enqueueing. Starting the
     // analysis now would analyse a half-discovered queue and leave the rest
@@ -945,6 +962,65 @@ if (this.scanAborted) {
     if (due.length === 0) return;
 
     this.analyze(BACKGROUND_INDEXING_BUDGET);
+  }
+
+  /**
+   * STEP80 — ONE bounded public-discovery round, orchestrated entirely through
+   * EXISTING abstractions (no second analysis pipeline, NO second publish
+   * pipeline):
+   *
+   *   discoverPublicSamples()      → existing QueueStore.enqueue (jobs)
+   *   existing JobRunner/pipeline  → analyzes whatever is due (once per round)
+   *   populateGlobalPublishQueue() → THE single existing publish transition
+   *                                   (createPublishCandidate →
+   *                                    GlobalPublishQueue.enqueue → flush)
+   *
+   * Discovery itself never publishes; the Step-70 auto-population pass already
+   * covers every analyzed record (including discovered public samples) after
+   * the analysis completes, so `publishPublicAnalyses()` is intentionally NOT
+   * wired here — it stays as a targeted helper for tests/tooling only.
+   *
+   * Budgeted (page + sample budget inside the discovery module), incremental
+   * (persisted cursor + index/job dedup) and non-blocking: the mount calls
+   * this fire-and-forget and every failure is logged only. Without the
+   * optional dep (`dbForDiscovery`) this is a no-op — behavior identical to
+   * before STEP80.
+   */
+  private async runPublicDiscoveryRound(): Promise<void> {
+    const { index, dbForDiscovery } = this.deps;
+    if (!index || !dbForDiscovery) return;
+    try {
+      // 1. Discover: paginated listing → new public samples enter the EXISTING
+      //    analysis queue. Known/analyzed/published samples are skipped by the
+      //    module's persisted-state dedup — nothing is enqueued twice.
+      await discoverPublicSamples(
+        { fetchPage: this.deps.fetchPage, index, queue: this.deps.queue, db: dbForDiscovery },
+        this.deps.analysisBuild,
+      );
+
+      // 2. Let the EXISTING runner analyze whatever became due — at most once
+      //    per round. If a run is already in flight (background or manual), we
+      //    never start a concurrent one; leftover due jobs are picked up by the
+      //    next round / next app start via the existing `nextDue` recovery.
+      if (this.analysis.status !== "running") {
+        const due = await this.deps.queue.nextDue(1);
+        if (due.length > 0) {
+          const runner = this.analyze(BACKGROUND_INDEXING_BUDGET);
+          await runner.start().catch(() => undefined);
+        }
+      }
+
+      // 3. Publish ONLY through the existing Step-70 transition (single path,
+      //    internally guarded by its own deps check).
+      await this.populateGlobalPublishQueue();
+    } catch (e) {
+      // Discovery must never destroy the normal indexing path — log only.
+      console.warn(
+        `[SampleMap] public discovery round failed (ignored): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
   }
 
   /** Request a clean pause (current in-flight job finishes; nothing is lost). */

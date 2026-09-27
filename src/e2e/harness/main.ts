@@ -33,6 +33,15 @@ import type {
   GlobalMapPoint,
 } from "../../global/contract";
 import {
+  clusterMapPoints,
+  entryCoverage,
+  globalMapPoints,
+  mapPoints,
+  mergeMapPoints,
+  type MapEntry,
+} from "../../ui/map/mapView";
+import { visibleGlobalPoints } from "../../ui/map/visibility";
+import {
   acceptUsageAndEnqueue,
   flushPendingPublications,
 } from "../../global/usageAcceptance";
@@ -92,6 +101,24 @@ const smTiming = {
 };
 
 const BUILD = "smap-build-v1";
+
+/**
+ * Seeded PRNG (mulberry32) for TEST DATA ONLY.
+ *
+ * Returns a function producing floats in [0,1). Deterministic for a given seed,
+ * so every stress run sees byte-identical points. `Math.random` is never used
+ * for fixtures anywhere in this harness.
+ */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 interface HarnessSample {
   meta: SampleMeta;
@@ -640,8 +667,68 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
          * layer sees exactly what production sees.
          */
         serveMany: (count: number) => Promise<GlobalMapPoint[]>;
+        /**
+         * Serve `count` SYNTHETIC global map points with a REALISTIC spatial
+         * mix and refresh. Returns the served points.
+         *
+         * `serveMany` is a uniform lattice, which is the worst case for
+         * clustering (every cell fills at the same rate). This hook serves the
+         * distribution a real library actually has, so a stress run measures
+         * something meaningful:
+         *
+         *   ~45%  normal-distributed cloud over the whole map (Box-Muller)
+         *   ~20%  tight dense hotspots (sigma 0.02-0.05)
+         *   ~15%  sparse points spread over the full area
+         *   ~12%  near-coincident groups (2-4 points within ~1e-3)
+         *    ~8%  a wandering diagonal band (structure, NOT a straight line)
+         *
+         * Deterministic: seeded mulberry32, no `Math.random`, no `Date`. The
+         * same (count, seed) always yields byte-identical points.
+         *
+         * `order` only permutes the SERVED order (same point set) so the
+         * clustering layer's order-independence can be verified in a real
+         * browser.
+         */
+        serveRealistic: (
+          count: number,
+          opts?: { seed?: number; order?: "natural" | "reversed" | "shuffled" },
+        ) => Promise<GlobalMapPoint[]>;
+        /**
+         * Serve `count` synthetic global map points that are FULLY COINCIDENT
+         * (identical x/y) and refresh. This is the exact probe for
+         * CLUSTER_MIN_POINTS: a cell can hold at most one cluster, so
+         * `clusters === 0` below the threshold and `clusters === 1` from the
+         * threshold upwards. Returns the served points.
+         */
+        serveCoincident: (count: number) => Promise<GlobalMapPoint[]>;
         clear: () => Promise<void>;
         current: () => GlobalMapPoint[];
+      };
+      /**
+       * READ-ONLY inspection of the PRODUCT clustering function (test-only).
+       *
+       * Re-runs the exact renderer pipeline for the app's current state
+       * (`visibleMapRecords` + visible global points -> merge -> cluster) and
+       * returns the entries, so a stress run can compare the real DOM against
+       * the product result and read the per-cluster MEMBER assignment (which
+       * the DOM deliberately does not expose, because a cluster carries no
+       * sample identity).
+       *
+       * It changes nothing: no state is written, nothing is re-rendered.
+       */
+      cluster: {
+        inspect: (zoom: number) => {
+          merged: number;
+          entries: Array<{
+            kind: "point" | "cluster";
+            cell: string | null;
+            count: number;
+            x: number;
+            y: number;
+            members: string[];
+          }>;
+          coverage: number;
+        };
       };
       /**
        * STEP23 — V2 similarity surface controls (test-only; product code never
@@ -853,6 +940,136 @@ setAllOffline: () => publishProvider.setAllOffline(),
           await app.refreshGlobalPoints();
           return points;
         },
+        serveCoincident: async (count: number): Promise<GlobalMapPoint[]> => {
+          const points: GlobalMapPoint[] = [];
+          for (let i = 0; i < count; i++) {
+            points.push({
+              contentIdentity: {
+                contentHash: `coincident-${String(i).padStart(4, "0")}`,
+                contentHashVersion: "pcm-v1",
+              },
+              x: 0.5,
+              y: 0.5,
+              representativeSampleId: `samples/coincident-${String(i).padStart(4, "0")}`,
+              primaryClass: "kick",
+            });
+          }
+          publishProvider.setMapPoints(points);
+          await app.refreshGlobalPoints();
+          return points;
+        },
+        /**
+         * Serve `count` synthetic global map points with a realistic spatial
+         * mix (see the type doc) and refresh. Returns the served points.
+         */
+        serveRealistic: async (
+          count: number,
+          opts?: { seed?: number; order?: "natural" | "reversed" | "shuffled" },
+        ): Promise<GlobalMapPoint[]> => {
+          const seed = opts?.seed ?? 20260927;
+          const rnd = mulberry32(seed);
+          const gauss = () => {
+            // Box-Muller; u1 clamped away from 0 so log() stays finite.
+            const u1 = Math.max(rnd(), 1e-12);
+            const u2 = rnd();
+            return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+          };
+          const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+          const uniform = () => rnd();
+
+          // Dense hotspot centres, drawn once so the whole set is coherent.
+          const hotspots = [
+            { x: 0.28, y: 0.66, s: 0.05 },
+            { x: 0.63, y: 0.31, s: 0.03 },
+            { x: 0.82, y: 0.78, s: 0.02 },
+          ];
+
+          const raw: Array<{ x: number; y: number }> = [];
+          const nCloud = Math.round(count * 0.45);
+          const nHot = Math.round(count * 0.2);
+          const nSparse = Math.round(count * 0.15);
+          const nNear = Math.round(count * 0.12);
+          const nBand = count - nCloud - nHot - nSparse - nNear;
+
+          // 1. normal cloud over the whole map
+          for (let i = 0; i < nCloud; i++) {
+            raw.push({
+              x: clamp01(0.5 + gauss() * 0.19),
+              y: clamp01(0.5 + gauss() * 0.19),
+            });
+          }
+          // 2. dense hotspots
+          for (let i = 0; i < nHot; i++) {
+            const h = hotspots[i % hotspots.length];
+            raw.push({
+              x: clamp01(h.x + gauss() * h.s),
+              y: clamp01(h.y + gauss() * h.s),
+            });
+          }
+          // 3. sparse, spread over the whole area
+          for (let i = 0; i < nSparse; i++) {
+            raw.push({ x: uniform(), y: uniform() });
+          }
+          // 4. near-coincident groups: 2-4 points ~1e-4..1e-3 apart.
+          // A group emits SEVERAL points, so the BUDGET (not the group count)
+          // terminates this section; the total stays exactly `count`.
+          let nearEmitted = 0;
+          while (nearEmitted < nNear) {
+            const ax = uniform();
+            const ay = uniform();
+            const group = 2 + Math.floor(rnd() * 3);
+            for (let g = 0; g < group && nearEmitted < nNear; g++) {
+              raw.push({
+                x: clamp01(ax + gauss() * 3e-4),
+                y: clamp01(ay + gauss() * 3e-4),
+              });
+              nearEmitted++;
+            }
+          }
+          // 5. a wandering diagonal band: structure without being a line
+          for (let i = 0; i < nBand; i++) {
+            const t = i / Math.max(1, nBand);
+            const base = 0.08 + 0.84 * t;
+            const wobble = 0.05 * Math.sin(t * Math.PI * 2.5) + gauss() * 0.012;
+            raw.push({
+              x: clamp01(base + gauss() * 0.015),
+              y: clamp01(t + wobble),
+            });
+          }
+
+          // Identity is bound to the GENERATION index, so a point's id and its
+          // coordinates always travel together.
+          const points: GlobalMapPoint[] = raw.map((p, i) => ({
+            contentIdentity: {
+              contentHash: `realistic-${String(i).padStart(5, "0")}`,
+              contentHashVersion: "pcm-v1",
+            },
+            x: p.x,
+            y: p.y,
+            representativeSampleId: `samples/realistic-${String(i).padStart(5, "0")}`,
+            primaryClass: "kick",
+          }));
+
+          // `order` permutes the SERVED ORDER only. The point set — every id,
+          // every coordinate — is byte-identical for all four variants, which
+          // is what makes this a real order-independence probe.
+          if (opts?.order === "reversed") {
+            points.reverse();
+          } else if (opts?.order === "shuffled") {
+            // Deterministic Fisher-Yates on a separate seed stream.
+            const sh = mulberry32(seed ^ 0x5bf03635);
+            for (let i = points.length - 1; i > 0; i--) {
+              const j = Math.floor(sh() * (i + 1));
+              const tmp = points[i];
+              points[i] = points[j];
+              points[j] = tmp;
+            }
+          }
+
+          publishProvider.setMapPoints(points);
+          await app.refreshGlobalPoints();
+          return points;
+        },
         /** Drop all fixture global points and refresh. */
         clear: async (): Promise<void> => {
           publishProvider.setMapPoints([]);
@@ -860,6 +1077,42 @@ setAllOffline: () => publishProvider.setAllOffline(),
         },
         /** The global points the app currently holds. */
         current: (): GlobalMapPoint[] => app.globalPoints,
+      },
+      cluster: {
+        inspect: (zoom: number) => {
+          // Mirrors render.ts -> renderSampleMap() exactly.
+          const local = mapPoints(app.visibleMapRecords);
+          // render.ts passes the visible globals; the renderer converts them
+          // with globalMapPoints() before merging. Same order, same functions.
+          const globals = globalMapPoints(
+            visibleGlobalPoints(app.globalPoints, app.visibility),
+          );
+          const merged = mergeMapPoints(local, globals);
+          const entries: MapEntry[] = clusterMapPoints(merged, zoom);
+          return {
+            merged: merged.length,
+            entries: entries.map((e) =>
+              e.kind === "point"
+                ? {
+                    kind: "point" as const,
+                    cell: null,
+                    count: 1,
+                    x: e.point.x,
+                    y: e.point.y,
+                    members: [e.point.sampleId],
+                  }
+                : {
+                    kind: "cluster" as const,
+                    cell: e.cell,
+                    count: e.count,
+                    x: e.x,
+                    y: e.y,
+                    members: e.points.map((p) => p.sampleId),
+                  },
+            ),
+            coverage: entryCoverage(entries),
+          };
+        },
       },
       v2: {
         attach: async (keys?: string[]): Promise<string[]> => {

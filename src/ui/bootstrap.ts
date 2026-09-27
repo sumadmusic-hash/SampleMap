@@ -76,6 +76,17 @@ export function browserDecode(audioCtx: AudioContext): AudioDecoder {
 }
 
 /**
+ * Hard upper bound for a single analysis-audio request.
+ *
+ * The analysis JobRunner is strictly serial, so one hung CDN request stalls
+ * every remaining sample: `fetch` without a timeout never settles, and the
+ * pipeline cannot move past an unresolved `await`. Measured healthy fetch is
+ * ~1.2 s per `s.wav`, so 30 s keeps a wide margin while still bounding a
+ * stalled connection.
+ */
+export const AUDIO_FETCH_TIMEOUT_MS = 30_000;
+
+/**
  * Fetch a sample's lossless audio bytes for transient in-RAM analysis (Step 15H).
  *
  * STEP77 — `cache: "no-store"` is mandatory here. The Audiotool CDN answers the
@@ -84,15 +95,31 @@ export function browserDecode(audioCtx: AudioContext): AudioDecoder {
  * cache (measured: 172 samples -> +483 MB `Cache_Data`, 563 MB after browser
  * close) even though the bytes are only needed transiently in RAM. Analysis
  * results belong in IndexedDB; the audio itself must never be persisted.
+ *
+ * The request is bounded by `AUDIO_FETCH_TIMEOUT_MS` via an `AbortController`.
+ * On expiry the fetch is aborted and rejects with an `AbortError`, which the
+ * analysis pipeline maps to a regular `failed` job — the existing retry/backoff
+ * logic then applies unchanged. The abort signal does not affect cache
+ * semantics, so the `no-store` policy stays intact.
  */
 export async function browserFetchAudio(
   _sample: SampleMeta,
   source: LosslessSource,
 ): Promise<FetchedAudio> {
-  const res = await fetch(source.url, { cache: "no-store" });
-  if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
-  const bytes = await res.arrayBuffer();
-  return { bytes, release: () => undefined };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AUDIO_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(source.url, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
+    const bytes = await res.arrayBuffer();
+    return { bytes, release: () => undefined };
+  } finally {
+    // Runs on every exit path: success, non-2xx, abort, and any other throw.
+    clearTimeout(timer);
+  }
 }
 
 /**

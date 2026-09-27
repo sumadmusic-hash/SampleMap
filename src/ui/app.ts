@@ -4,7 +4,13 @@ import type { SampleMapSearchEngine, SearchQuery, SearchResult, SearchSort, Sear
 import type { PreviewService, PreviewHandle } from "../preview/previewService";
 import { SampleMapMachinisteService, MAX_BATCH_SLOTS } from "../machiniste/machinisteService";
 import type { MachinisteSendResult } from "../machiniste/machinisteService";
-import type { JobRunner, AnalysisBudget, RunProgress, RunStopReason } from "../pipeline/jobRunner";
+import type {
+  JobRunner,
+  AnalysisBudget,
+  RunProgress,
+  RunStopReason,
+  JobDoneHook,
+} from "../pipeline/jobRunner";
 import { scanLibrary } from "../library/libraryScanner";
 import type { PageFetcher, KnownProvider } from "../library/libraryScanner";
 import type { SampleMeta } from "@audiotool/nexus/api";
@@ -392,8 +398,14 @@ export interface SampleMapAppDeps {
   preview: PreviewService;
   /** The only machiniste integration. */
   machiniste: SampleMapMachinisteService;
-  /** Build a fresh JobRunner with the given controlled budget. */
-  createRunner: (budget: AnalysisBudget) => JobRunner;
+  /**
+   * Build a fresh JobRunner with the given controlled budget.
+   *
+   * The optional `onJobDone` hook is forwarded to the runner so a live
+   * consumer can react to each finished job without waiting for `start()` to
+   * resolve (which only happens at the end of the whole run).
+   */
+  createRunner: (budget: AnalysisBudget, onJobDone?: JobDoneHook) => JobRunner;
   /**
    * STEP38 — the authenticated user's STABLE account id (`users/{uuid}`,
    * never the display name). Drives OWN-vs-FOREIGN eligibility + priority.
@@ -457,6 +469,19 @@ const GLOBAL_MAP_MAX_PAGES = 2;
 
 /** Debounce for camera-driven global refresh (no request per pointermove). */
 const GLOBAL_REFRESH_DEBOUNCE_MS = 250;
+
+/**
+ * Minimum interval between coalesced live result refreshes while an analysis
+ * run is in flight.
+ *
+ * The pipeline persists every finished record immediately, but a run may
+ * complete thousands of jobs; refreshing (a full `getAll()` + search + full
+ * render) per job would cost more than the analysis itself. Jobs that finish
+ * within this window share one refresh, so the update rate is bounded by TIME,
+ * not by the job count. The run's final state is always synced exactly once at
+ * run end (see `applyProgress`), which also cancels any pending live refresh.
+ */
+const ANALYSIS_LIVE_REFRESH_MS = 500;
 
 /** Step 16L: distinguishable global-map UI states. */
 export type GlobalMapState = "idle" | "loading" | "ok" | "empty" | "error";
@@ -645,6 +670,14 @@ export class SampleMapApp {
   /** BUG #5 (STEP16V): generation counter so a stale in-flight global-points
    *  response can never overwrite a newer camera's points (previewEpoch style). */
   private globalRefreshEpoch = 0;
+  /** SM-AUDIT-008: generation counter so a stale in-flight `refreshSearch()`
+   *  can never write an older snapshot over a newer one. Matters once search
+   *  refreshes overlap (live analysis updates + rapid user filter changes);
+   *  without it a slow earlier query can clobber a fast later one. */
+  private searchEpoch = 0;
+  /** Pending coalesced live result refresh during an analysis run. */
+  private analysisLiveTimer: ReturnType<typeof setTimeout> | undefined;
+  private analysisLiveDisposed = false;
 
   /** STEP19A E-P7 — the one-time consent store (default: safe in-memory). */
   private readonly consentStore: Ep7ConsentStore;
@@ -809,7 +842,7 @@ if (this.scanAborted) {
     this.analysis.failed = 0;
     this.analysis.skipped = 0;
     this.analysis.gone = 0;
-    this.runner = this.deps.createRunner(budget);
+    this.runner = this.deps.createRunner(budget, () => this.applyLiveProgress());
     void this.runner.start().then(
       (p) => this.applyProgress(p),
       (e) => {
@@ -846,7 +879,56 @@ if (this.scanAborted) {
     return this.runner;
   }
 
+  /**
+   * Per-job progress while a run is in flight (`JobRunner` `onJobDone`).
+   *
+   * Deliberately does NOT call `notify()`: a full render per job is exactly
+   * what this path must avoid. The counters are written straight through and
+   * the expensive part (search + render) is coalesced by
+   * `scheduleLiveRefresh()`, so the next render picks up both the new counts
+   * and the new records.
+   */
+  private applyLiveProgress(): void {
+    // Late callback from a run that already ended — applyProgress owns the
+    // final state; never move the progress display backwards.
+    if (this.analysis.status !== "running") return;
+    const p = this.runner?.progressSnapshot();
+    if (!p) return;
+    this.analysis.analyzed = p.analyzed;
+    this.analysis.failed = p.failed;
+    this.analysis.skipped = p.skipped;
+    this.analysis.gone = p.gone;
+    this.scheduleLiveRefresh();
+  }
+
+  /**
+   * Coalesce per-job progress into at most one result refresh per
+   * `ANALYSIS_LIVE_REFRESH_MS` window (trailing edge, never re-armed): several
+   * jobs finishing back-to-back share a single refresh, so a 1000-sample run
+   * cannot produce 1000 full search+render cycles.
+   */
+  private scheduleLiveRefresh(): void {
+    if (this.analysisLiveDisposed) return;
+    if (this.analysisLiveTimer !== undefined) return; // already coalescing
+    this.analysisLiveTimer = setTimeout(() => {
+      this.analysisLiveTimer = undefined;
+      void this.refreshSearch();
+    }, ANALYSIS_LIVE_REFRESH_MS);
+  }
+
+  /** Drop a pending coalesced live refresh (the run is over; it is redundant). */
+  private cancelLiveRefresh(): void {
+    if (this.analysisLiveTimer !== undefined) {
+      clearTimeout(this.analysisLiveTimer);
+      this.analysisLiveTimer = undefined;
+    }
+  }
+
   private applyProgress(p: RunProgress): void {
+    // The run is over: a pending live refresh is now redundant, and letting it
+    // fire later would re-render the same data (or, without the status guard
+    // in applyLiveProgress, could fight this final state).
+    this.cancelLiveRefresh();
     this.analysis.analyzed = p.analyzed;
     this.analysis.failed = p.failed;
     this.analysis.skipped = p.skipped;
@@ -860,6 +942,8 @@ if (this.scanAborted) {
     // the surfaces keep serving the pre-run results and the map stays empty even
     // though every record is analyzed and carries a persisted map position.
     // Best-effort: a failing re-read must not surface as an unhandled rejection.
+    // This final sync is authoritative — it is the only refresh that must
+    // observe every record the run persisted.
     if (typeof this.deps.search?.search === "function") void this.refreshSearch();
   }
 
@@ -890,13 +974,21 @@ if (this.scanAborted) {
 
   /** Project current filters onto the SearchEngine (read-only). */
   async refreshSearch(): Promise<void> {
+    // SM-AUDIT-008: every refresh supersedes the previous in-flight one
+    // (previewEpoch / globalRefreshEpoch style). Search calls overlap once
+    // live analysis updates meet rapid user filter changes, and an older
+    // response must never overwrite a newer snapshot.
+    const epoch = ++this.searchEpoch;
     const q: SearchQuery = {};
     if (this.searchState.text.trim()) q.text = this.searchState.text.trim();
     if (this.searchState.classes.length) q.classes = [...this.searchState.classes];
     if (this.searchState.minConfidence !== undefined) q.minConfidence = this.searchState.minConfidence;
     q.sortBy = this.searchState.sortBy;
     q.sortDir = this.searchState.sortDir;
-    this.results = await this.deps.search.search(q);
+    const results = await this.deps.search.search(q);
+    // Superseded mid-flight: a newer refresh will publish its own snapshot.
+    if (epoch !== this.searchEpoch) return;
+    this.results = results;
     // STEP16R E-P6: re-sync the record registry with the freshly-read records
     // so that out-of-band persisted writes (16H usage-acceptance markers) are
     // reflected by read-only surfaces (e.g. the publish-status inspector block).
@@ -910,6 +1002,8 @@ if (this.scanAborted) {
     if (this.collection.sampleIds.length > 0) {
       await this.refreshCollectionKnownIds();
     }
+    // The collection re-sync above awaits — a newer refresh may have started.
+    if (epoch !== this.searchEpoch) return;
     this.notify();
   }
 
@@ -2531,6 +2625,9 @@ if (this.scanAborted) {
       clearTimeout(this.globalRefreshTimer);
       this.globalRefreshTimer = undefined;
     }
+    this.analysisLiveDisposed = true;
+    this.searchEpoch++;
+    this.cancelLiveRefresh();
     this.revokeCurrentPreview();
     this.deps.preview.dispose();
   }

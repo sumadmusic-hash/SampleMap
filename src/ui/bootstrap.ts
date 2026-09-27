@@ -10,7 +10,7 @@ import { PreviewService } from "../preview/previewService";
 import { AnalysisPipeline, DEFAULT_SUPPORTED_VERSIONS } from "../pipeline/analysisPipeline";
 import type { FetchedAudio } from "../pipeline/analysisPipeline";
 import { JobRunner } from "../pipeline/jobRunner";
-import type { AnalysisBudget } from "../pipeline/jobRunner";
+import type { AnalysisBudget, JobDoneHook } from "../pipeline/jobRunner";
 import type { LosslessSource } from "../pipeline/sourceSelection";
 import { HeuristicClassifier } from "../classify/heuristicClassifier";
 import { HierClassifier } from "../classify/hierClassifier";
@@ -206,8 +206,8 @@ export async function buildBrowserDeps(opts: {
 
   const queueStore = queue;
   const analysisBuild = opts.analysisBuild ?? ANALYSIS_BUILD;
-  const createRunner = (budget: AnalysisBudget) =>
-    new JobRunner({ pipeline, queue: queueStore, analysisBuild, budget });
+  const createRunner = (budget: AnalysisBudget, onJobDone?: JobDoneHook) =>
+    new JobRunner({ pipeline, queue: queueStore, analysisBuild, budget, onJobDone });
 
   // Known-updatedAt provider: index.analyzedAt as a "seen" proxy for delta scan.
   const known: KnownProvider = {

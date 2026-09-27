@@ -34,6 +34,13 @@ export interface RunProgress {
   stoppedReason: RunStopReason | undefined;
 }
 
+/**
+ * Informational per-job progress callback. Fired once after every job
+ * completes, whatever its outcome (analyzed / skipped / gone / failed), with
+ * the run's live progress snapshot. Consumers must treat it as read-only.
+ */
+export type JobDoneHook = (progress: Readonly<RunProgress>) => void;
+
 export interface JobRunnerOptions {
   pipeline: AnalysisPipeline;
   queue: QueueStore;
@@ -42,6 +49,18 @@ export interface JobRunnerOptions {
   budget?: AnalysisBudget;
   /** Reset stuck `processing` jobs to `queued` on start. Default: true. */
   recoverStuck?: boolean;
+  /**
+   * Optional per-job progress hook (see {@link JobDoneHook}).
+   *
+   * This exists because the analysis pipeline persists each finished record to
+   * the index immediately, while `start()` only resolves when the WHOLE run
+   * ends. Without a hook, a UI can only learn about new records at run end, so
+   * the result list and the map stay on the pre-run snapshot for the whole run.
+   *
+   * The hook is purely observational: a throwing consumer is swallowed and can
+   * never break the queue (the per-job isolation contract above still holds).
+   */
+  onJobDone?: JobDoneHook;
 }
 
 export class JobRunner {
@@ -50,6 +69,7 @@ export class JobRunner {
   private readonly analysisBuild: string;
   private readonly budget: number | undefined;
   private readonly recoverStuck: boolean;
+  private readonly onJobDone: JobDoneHook | undefined;
 
   private running = false;
   private paused = false;
@@ -68,6 +88,7 @@ export class JobRunner {
     this.analysisBuild = opts.analysisBuild;
     this.budget = opts.budget;
     this.recoverStuck = opts.recoverStuck ?? true;
+    this.onJobDone = opts.onJobDone;
   }
 
   isRunning(): boolean {
@@ -164,44 +185,60 @@ export class JobRunner {
 
   private async processOne(job: AnalysisJob): Promise<void> {
     try {
-      await this.queue.markProcessing(job);
-    } catch (e) {
-      this.progress.failed++;
-      this.lastError = String(e);
-      return;
-    }
-
-    try {
-      const outcome = await this.pipeline.run(job.sampleId, this.analysisBuild);
-      switch (outcome.status) {
-        case "analyzed":
-          await this.queue.markAnalyzed(job);
-          this.progress.analyzed++;
-          break;
-        case "skipped":
-          await this.queue.markSkipped(job, outcome.error);
-          this.progress.skipped++;
-          break;
-        case "gone":
-          await this.queue.markGone(job, outcome.error);
-          this.progress.gone++;
-          break;
-        case "failed":
-          await this.queue.markFailed(job, outcome.error);
-          this.progress.failed++;
-          this.lastError = outcome.error;
-          break;
-      }
-    } catch (e) {
-      // Defence-in-depth: per-job isolation so one failure cannot stop the queue.
-      const message = e instanceof Error ? e.message : String(e);
       try {
-        await this.queue.markFailed(job, message);
-      } catch {
-        // Ignore a failed status write; the loop continues regardless.
+        await this.queue.markProcessing(job);
+      } catch (e) {
+        this.progress.failed++;
+        this.lastError = String(e);
+        return;
       }
-      this.progress.failed++;
-      this.lastError = message;
+
+      try {
+        const outcome = await this.pipeline.run(job.sampleId, this.analysisBuild);
+        switch (outcome.status) {
+          case "analyzed":
+            await this.queue.markAnalyzed(job);
+            this.progress.analyzed++;
+            break;
+          case "skipped":
+            await this.queue.markSkipped(job, outcome.error);
+            this.progress.skipped++;
+            break;
+          case "gone":
+            await this.queue.markGone(job, outcome.error);
+            this.progress.gone++;
+            break;
+          case "failed":
+            await this.queue.markFailed(job, outcome.error);
+            this.progress.failed++;
+            this.lastError = outcome.error;
+            break;
+        }
+      } catch (e) {
+        // Defence-in-depth: per-job isolation so one failure cannot stop the queue.
+        const message = e instanceof Error ? e.message : String(e);
+        try {
+          await this.queue.markFailed(job, message);
+        } catch {
+          // Ignore a failed status write; the loop continues regardless.
+        }
+        this.progress.failed++;
+        this.lastError = message;
+      }
+    } finally {
+      // Fires exactly once per job, on every exit path, so a consumer never has
+      // to infer completion from `start()` resolving at the end of the run.
+      this.emitJobDone();
+    }
+  }
+
+  /** Observational only — a throwing consumer must not break the queue. */
+  private emitJobDone(): void {
+    if (!this.onJobDone) return;
+    try {
+      this.onJobDone(this.progressSnapshot());
+    } catch {
+      // Deliberately ignored (per-job isolation contract).
     }
   }
 }

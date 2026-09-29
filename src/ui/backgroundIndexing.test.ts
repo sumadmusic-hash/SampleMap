@@ -495,6 +495,8 @@ interface DiscoveryRig extends Rig {
   setListing: (metas: SampleMeta[]) => void;
   /** Max number of concurrently running pipelines observed. */
   maxParallelRuns: () => number;
+  /** How many pipelines are executing RIGHT NOW. */
+  inFlight: () => number;
   /** How often `start()` was called on a JobRunner (one per real run). */
   startCalls: () => number;
   /**
@@ -619,6 +621,7 @@ async function discoveryRig(opts: { hold?: boolean } = {}): Promise<DiscoveryRig
       listing = metas;
     },
     maxParallelRuns: () => maxParallel,
+    inFlight: () => inFlight,
     startCalls: () => starts,
     holdDiscovery: () => {
       discoveryGate = new Promise<void>((res) => {
@@ -726,25 +729,63 @@ describe("STEP80 public discovery ↔ analysis coordination", () => {
     }
   });
 
-  it("B2. a run that ends with the discovered job still due triggers EXACTLY ONE follow-up", async () => {
+  it("B2. discovery DURING a running analysis: when that run ends, EXACTLY ONE follow-up", async () => {
+    // This is the ONLY test that exercises the race branch
+    // (`else { await currentAnalysisRun; ... }`) of runPublicDiscoveryRound().
+    //
+    // The ordering is the whole point and is enforced deterministically:
+    //   1. the pipeline is HELD, so the automatic run is stuck inside
+    //      processOne(samples/new-1) and CANNOT complete on its own;
+    //   2. discovery is HELD too, so it enqueues nothing yet;
+    //   3. only then is discovery released -> samples/public-1 is enqueued
+    //      while the run is provably still executing (inFlight() === 1).
+    //      Therefore the `analysis.status !== "running"` check inside
+    //      runPublicDiscoveryRound() is provably FALSE here and the race branch
+    //      MUST be taken;
+    //   4. only afterwards the run is ended WITHOUT consuming public-1, so
+    //      `currentAnalysisRun` resolves with public-1 still `due`;
+    //   5. the race code then checks nextDue() once and starts exactly one
+    //      follow-up run.
     const r = await discoveryRig({ hold: true });
+    r.holdDiscovery();
     try {
       await r.app.startBackgroundIndexing();
+      // The run is in flight and blocked inside the held pipeline.
       await waitFor(() => r.app.analysis.status === "running");
+      await waitFor(() => r.inFlight() === 1);
+
+      // (2)+(3) Release discovery NOW: the enqueue below happens while the run
+      // is still in flight, which is what forces the race branch.
+      r.releaseDiscovery();
       await waitForAsync(
         async () => (await r.db.queue.get("samples/public-1")) !== undefined,
       );
 
-      // Pause the in-flight run so it stops WITHOUT consuming the discovered
-      // job. This is the "run finished, discovery's job still due" window.
+      // The decisive assertion: the run is still executing AND the discovered
+      // job is queued but not yet analysed. There is no way the
+      // `status !== "running"` branch could have handled this.
+      expect(r.app.analysis.status).toBe("running");
+      expect(r.inFlight()).toBe(1);
+      expect(r.pd.analysed).toEqual(["samples/new-1"]);
+      expect((await r.db.queue.get("samples/public-1"))?.status).toBe("queued");
+      // No second run was started while the first one was in flight.
+      expect(r.startCalls()).toBe(1);
+
+      // (4) End the in-flight run WITHOUT letting it consume public-1: pause
+      // first, so the JobRunner's loop breaks before its next nextDue().
       r.app.pause();
       r.pd.release();
       await waitFor(() => r.app.analysis.status !== "running");
 
-      // The discovered job is still due: exactly ONE follow-up run picks it up.
+      // (5) Exactly ONE follow-up run picks it up.
       await waitFor(() => r.pd.analysed.includes("samples/public-1"));
       await r.settle();
       await flush();
+
+      // The analysis ORDER is the non-racy proof that the first run did not
+      // consume the discovered job (it only ever saw samples/new-1, asserted
+      // above) and that a SEPARATE follow-up run picked public-1 up afterwards.
+      expect(r.pd.analysed).toEqual(["samples/new-1", "samples/public-1"]);
 
       // Two runs total (the paused one + exactly one follow-up), each started
       // exactly once, and never two at the same time.
@@ -756,6 +797,7 @@ describe("STEP80 public discovery ↔ analysis coordination", () => {
       expect(r.maxParallelRuns()).toBe(1);
       expect((await r.db.queue.get("samples/public-1"))?.status).toBe("analyzed");
     } finally {
+      r.releaseDiscovery();
       r.pd.release();
       await r.db.db.close();
     }

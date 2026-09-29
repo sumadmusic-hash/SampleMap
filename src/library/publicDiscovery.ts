@@ -20,10 +20,11 @@
  *   abstractions.
  *
  * BOUNDARIES
- *  - NO POPULARITY LOGIC (yet): `numFavorites`/`numUsages` are NEVER used as a
- *    filter or ranking signal here — relevance signals belong to the STEP38
- *    analysis-eligibility gate for the OWN scan only. Discovery ranks nothing;
- *    ranking/popularity selection is a later, separate decision.
+ *  - STEP81 POPULARITY: the two documented objective Audiotool signals
+ *    (`numFavorites`, `numUsages`) are now used as a SERVER-SIDE sort order
+ *    only — never combined into an invented score. There is NO weighting, NO
+ *    normalization and NO locally computed ranking formula anywhere in this
+ *    file. See `PUBLIC_DISCOVERY_LANES` below.
  *  - The existing STEP38 eligibility rules are NOT changed and NOT reused for
  *    public discovery: foreign zero-signal samples must stay ineligible for the
  *    OWN auto-enqueue path while remaining discoverable + publishable here.
@@ -67,34 +68,91 @@ export const PUBLIC_DISCOVERY_SAMPLE_BUDGET = 200;
 export const PUBLIC_DISCOVERY_PAGE_SIZE = 40;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// STEP81 — Popularity lanes
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The two documented objective popularity signals, each requested as its OWN
+ * single-field server-side sort order.
+ *
+ * WHY TWO LANES INSTEAD OF ONE COMBINED ORDER (verified against the installed
+ * `@audiotool/nexus@0.0.17` contract, see `SampleListOptions.orderBy`):
+ *   - `orderBy` is typed as a single `string` (SDK option AND the protobuf
+ *     `ListSamplesRequest.order_by` field 5),
+ *   - it is documented only in the singular form, e.g. `"sample.create_time desc"`,
+ *   - and NOTHING in the shipped package documents a separator or a grammar for
+ *     combining several sort fields.
+ * Multi-field ordering is therefore NOT confirmed, so it is NOT assumed. Instead
+ * each signal gets its own deterministic lane, which needs no unverified
+ * assumption and keeps both signals observable.
+ *
+ * `sample.num_favorites` and `sample.num_usages` are documented fields in the
+ * same list as the other supported `orderBy` fields, and both are forwarded
+ * verbatim to the server.
+ *
+ * NO invented formula: these strings are pure pass-through orderings. This file
+ * never adds, weights, normalizes or otherwise combines the two values locally.
+ */
+export const PUBLIC_DISCOVERY_LANES = [
+  { key: "favorites", orderBy: "sample.num_favorites desc" },
+  { key: "usages", orderBy: "sample.num_usages desc" },
+] as const;
+
+export type PublicDiscoveryLaneKey = (typeof PUBLIC_DISCOVERY_LANES)[number]["key"];
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Discovery cursor meta record (discovery state ONLY)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Meta-store key holding the singleton discovery cursor record. */
+/**
+ * Meta-store key holding the singleton discovery cursor record.
+ *
+ * STABLE on purpose across cursor versions: `readCursor()` finds the existing
+ * record, sees the `cursorVersion` mismatch and discards it. Changing the key
+ * instead would orphan the old record forever.
+ */
 export const DISCOVERY_META_KEY = "public-discovery-v1";
 
 /**
  * Schema/version marker for the cursor semantics. If the meaning of the stored
  * token ever changes, bump this value: a mismatch makes the next round discard
  * the old token and restart from the first page instead of mis-resuming.
+ *
+ * STEP81: v1 → v2. The single `lastPageToken` is replaced by ONE token PER
+ * popularity lane, because each lane walks its own independently ordered
+ * listing and therefore has its own pagination position. A v1 token refers to
+ * an un-ordered listing walk and is NOT reusable in a lane, so it is discarded
+ * deterministically (the version check below) rather than being silently
+ * reinterpreted as a lane token.
  */
-export const DISCOVERY_CURSOR_VERSION = 1;
+export const DISCOVERY_CURSOR_VERSION = 2;
 
 /**
  * The persisted resume state of public discovery. Deliberately tiny:
- *  - `lastPageToken` — the `nextPageToken` to continue from ("" = at the start;
- *    a round that exhausted the listing also resets to "").
- *  - `rounds`        — completed rounds (diagnostics).
- *  - `lastRoundAt`   — ISO timestamp of the last completed round.
+ *  - `laneTokens`     — per-lane `nextPageToken` to continue from ("" = at the
+ *    start; a lane that exhausted the listing resets to ""). Order is the
+ *    server's, so a lane's token is ONLY valid for that same lane.
+ *  - `rounds`         — completed rounds (diagnostics).
+ *  - `lastRoundAt`    — ISO timestamp of the last completed round.
  *
- * NO sample ids, NO metadata values, NO audio — pure discovery bookkeeping.
+ * NO sample ids, NO metadata values, NO popularity values, NO audio — pure
+ * discovery bookkeeping.
  */
 export interface PublicDiscoveryCursor {
   kind: "public-discovery";
   cursorVersion: number;
-  lastPageToken: string;
+  /** Per-lane resume token. Missing keys are treated as "start at page one". */
+  laneTokens: Partial<Record<PublicDiscoveryLaneKey, string>>;
   rounds: number;
   lastRoundAt?: string;
+}
+
+function laneTokenOf(
+  cursor: PublicDiscoveryCursor | undefined,
+  lane: PublicDiscoveryLaneKey,
+): string | undefined {
+  const token = cursor?.laneTokens?.[lane];
+  return token !== undefined && token.length > 0 ? token : undefined;
 }
 
 async function readCursor(db: ElasticDB): Promise<PublicDiscoveryCursor | undefined> {
@@ -104,7 +162,8 @@ async function readCursor(db: ElasticDB): Promise<PublicDiscoveryCursor | undefi
     raw !== null &&
     (raw as Partial<PublicDiscoveryCursor>).kind === "public-discovery" &&
     (raw as Partial<PublicDiscoveryCursor>).cursorVersion === DISCOVERY_CURSOR_VERSION &&
-    typeof (raw as Partial<PublicDiscoveryCursor>).lastPageToken === "string"
+    typeof (raw as Partial<PublicDiscoveryCursor>).laneTokens === "object" &&
+    (raw as Partial<PublicDiscoveryCursor>).laneTokens !== null
   ) {
     return raw as PublicDiscoveryCursor;
   }
@@ -145,6 +204,24 @@ export interface DiscoverPublicOptions {
 
 export type DiscoveryStopReason = "exhausted" | "budget";
 
+/** Per-lane outcome of one round (diagnostics; the queue is shared). */
+export interface DiscoveryLaneResult {
+  lane: PublicDiscoveryLaneKey;
+  /** The server-side `orderBy` string sent for this lane. */
+  orderBy: string;
+  /** Listing entries inspected in this lane (all visibilities, before the gate). */
+  seenCount: number;
+  /** Entries that passed the public-visibility gate. */
+  publicCount: number;
+  /** New public samples enqueued in this lane. */
+  newlyEnqueued: number;
+  /** Pages actually fetched in this lane. */
+  pagesFetched: number;
+  stoppedReason: DiscoveryStopReason;
+  /** Resume token stored for the next round ("" = restart at page one). */
+  nextPageToken: string;
+}
+
 export interface DiscoveryRoundResult {
   /** Listing entries inspected this round (all visibilities, before the gate). */
   seenCount: number;
@@ -156,24 +233,34 @@ export interface DiscoveryRoundResult {
   alreadyKnown: number;
   /** Non-public entries skipped by the visibility gate. */
   skippedNonPublic: number;
-  /** Pages actually fetched this round. */
+  /** Pages actually fetched this round (sum over lanes). */
   pagesFetched: number;
   stoppedReason: DiscoveryStopReason;
   /** Cursor state after this round. */
   cursor: PublicDiscoveryCursor;
+  /** STEP81 — per-lane breakdown, in the fixed `PUBLIC_DISCOVERY_LANES` order. */
+  lanes: DiscoveryLaneResult[];
 }
 
 /**
- * Run ONE bounded public-discovery round:
- *  1. resume at the persisted `nextPageToken` (or the first page),
+ * Run ONE bounded public-discovery round over EVERY popularity lane:
+ *  1. resume each lane at ITS OWN persisted `nextPageToken` (or the first page),
  *  2. page through `samples.list` via the EXISTING `PageFetcher` abstraction,
+ *     with the lane's own server-side `orderBy`,
  *  3. keep only `visibility === "public"` entries,
  *  4. skip anything already known locally (index record OR job row — both mean
  *     "registered"; the queue/job idempotency plus the pipeline's
- *     "already analyzed for build" skip guarantee that nothing is re-analyzed),
+ *     "already analyzed for build" skip guarantee that nothing is re-analyzed).
+ *     This is also what deduplicates ACROSS lanes: a sample the favorites lane
+ *     just enqueued already has a job row, so the usages lane skips it,
  *  5. enqueue the rest through the EXISTING `QueueStore.enqueue` — the same
- *     path the own-library scan uses, so the existing JobRunner picks them up,
- *  6. persist the updated cursor and stop at the budget.
+ *     path the own-library scan uses, so the existing JobRunner picks them up.
+ *     Lanes only page differently; they share ONE queue and ONE analysis
+ *     pipeline, which is why no second pipeline is introduced,
+ *  6. persist the updated per-lane cursor and stop at the budget.
+ *
+ * The page/sample budgets are split EVENLY across the lanes, so the total work
+ * of a round stays exactly as bounded as it was with a single lane.
  *
  * Metadata-only: no audio is touched anywhere in this function.
  */
@@ -193,10 +280,12 @@ export async function discoverPublicSamples(
   const nowIso = opts.now ?? (() => new Date().toISOString());
 
   const previous = await readCursor(deps.db);
-  let pageToken: string | undefined =
-    previous !== undefined && previous.lastPageToken.length > 0
-      ? previous.lastPageToken
-      : undefined;
+
+  // Split the per-round budget evenly across the lanes (>=1 page per lane so a
+  // lane never gets a zero budget and silently stops progressing).
+  const laneCount = PUBLIC_DISCOVERY_LANES.length;
+  const laneMaxPages = Math.max(1, Math.floor(maxPages / laneCount));
+  const laneMaxSamples = Math.max(1, Math.floor(maxSamples / laneCount));
 
   let seenCount = 0;
   let publicCount = 0;
@@ -205,59 +294,91 @@ export async function discoverPublicSamples(
   let skippedNonPublic = 0;
   let pagesFetched = 0;
   let stoppedReason: DiscoveryStopReason = "exhausted";
+  const lanes: DiscoveryLaneResult[] = [];
+  const laneTokens: PublicDiscoveryCursor["laneTokens"] = {};
 
-  for (;;) {
-    if (pagesFetched >= maxPages || seenCount >= maxSamples) {
-      // Budget reached BEFORE the listing ran out: keep the CURRENT token so
-      // the next round resumes exactly here.
-      stoppedReason = "budget";
-      break;
-    }
-    const page = await deps.fetchPage({ pageSize, pageToken });
-    pagesFetched++;
+  for (const lane of PUBLIC_DISCOVERY_LANES) {
+    let pageToken = laneTokenOf(previous, lane.key);
+    let laneSeen = 0;
+    let lanePublic = 0;
+    let laneEnqueued = 0;
+    let lanePages = 0;
+    let laneStopped: DiscoveryStopReason = "exhausted";
 
-    for (const meta of page.samples) {
-      seenCount++;
-      if (!isPublicListable(meta)) {
-        skippedNonPublic++;
-        continue;
+    for (;;) {
+      if (lanePages >= laneMaxPages || laneSeen >= laneMaxSamples) {
+        // Budget reached BEFORE the listing ran out: keep the CURRENT token so
+        // the next round resumes this lane exactly here.
+        laneStopped = "budget";
+        break;
       }
-      publicCount++;
-      // Already-known check FIRST: a local index record or an existing job row
-      // means this sample is registered (and possibly already analyzed) — never
-      // enqueue it again.
-      const knownIndex = await deps.index.get(meta.name);
-      if (knownIndex !== undefined) {
-        alreadyKnown++;
-        continue;
+      const page = await deps.fetchPage({
+        pageSize,
+        pageToken,
+        orderBy: lane.orderBy,
+      });
+      lanePages++;
+
+      for (const meta of page.samples) {
+        laneSeen++;
+        if (!isPublicListable(meta)) {
+          skippedNonPublic++;
+          continue;
+        }
+        lanePublic++;
+        // Already-known check FIRST: a local index record or an existing job row
+        // means this sample is registered (and possibly already analyzed) — never
+        // enqueue it again. This also dedups across lanes.
+        const knownIndex = await deps.index.get(meta.name);
+        if (knownIndex !== undefined) {
+          alreadyKnown++;
+          continue;
+        }
+        const knownJob = await deps.queue.get(meta.name);
+        if (knownJob !== undefined) {
+          alreadyKnown++;
+          continue;
+        }
+        const outcome = await deps.queue.enqueue(meta.name, analysisBuild);
+        if (outcome === "added") laneEnqueued++;
+        else alreadyKnown++;
       }
-      const knownJob = await deps.queue.get(meta.name);
-      if (knownJob !== undefined) {
-        alreadyKnown++;
-        continue;
+
+      const next = page.nextPageToken;
+      if (next === undefined || next.length === 0 || page.samples.length === 0) {
+        // Listing exhausted: the NEXT round starts this lane again at the first
+        // page. Deduplication against the local stores keeps repeat rounds cheap
+        // and duplicate-free (the deliberate fallback to a persistent token,
+        // which Audiotool pagination semantics do not guarantee to be long-lived).
+        pageToken = undefined;
+        laneStopped = "exhausted";
+        break;
       }
-      const outcome = await deps.queue.enqueue(meta.name, analysisBuild);
-      if (outcome === "added") newlyEnqueued++;
-      else alreadyKnown++;
+      pageToken = next;
     }
 
-    const next = page.nextPageToken;
-    if (next === undefined || next.length === 0 || page.samples.length === 0) {
-      // Listing exhausted: the NEXT round starts again at the first page.
-      // Deduplication against the local stores keeps repeat rounds cheap and
-      // duplicate-free (the deliberate fallback to a persistent token, which
-      // Audiotool pagination semantics do not guarantee to be long-lived).
-      pageToken = undefined;
-      stoppedReason = "exhausted";
-      break;
-    }
-    pageToken = next;
+    seenCount += laneSeen;
+    publicCount += lanePublic;
+    newlyEnqueued += laneEnqueued;
+    pagesFetched += lanePages;
+    if (laneStopped === "budget") stoppedReason = "budget";
+    laneTokens[lane.key] = laneStopped === "budget" ? pageToken ?? "" : "";
+    lanes.push({
+      lane: lane.key,
+      orderBy: lane.orderBy,
+      seenCount: laneSeen,
+      publicCount: lanePublic,
+      newlyEnqueued: laneEnqueued,
+      pagesFetched: lanePages,
+      stoppedReason: laneStopped,
+      nextPageToken: laneTokens[lane.key] ?? "",
+    });
   }
 
   const cursor: PublicDiscoveryCursor = {
     kind: "public-discovery",
     cursorVersion: DISCOVERY_CURSOR_VERSION,
-    lastPageToken: stoppedReason === "budget" ? pageToken ?? "" : "",
+    laneTokens,
     rounds: (previous?.rounds ?? 0) + 1,
     lastRoundAt: nowIso(),
   };
@@ -272,6 +393,7 @@ export async function discoverPublicSamples(
     pagesFetched,
     stoppedReason,
     cursor,
+    lanes,
   };
 }
 

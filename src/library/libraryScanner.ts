@@ -30,6 +30,13 @@ export type PageFetcher = (opts: {
    * the unfiltered general scan (pre-STEP62 behavior unchanged).
    */
   filter?: string;
+  /**
+   * STEP81 — optional server-side sort order forwarded verbatim to
+   * `samples.list` (e.g. `sample.num_favorites desc`). Undefined for the
+   * own-library scan and for any caller that does not ask for a specific
+   * order (pre-STEP81 behavior unchanged).
+   */
+  orderBy?: string;
 }) => Promise<SampleListPage>;
 
 /** Local knowledge of a sample's last-seen update time (ISO) or none if unknown. */

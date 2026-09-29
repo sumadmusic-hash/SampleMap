@@ -17,6 +17,30 @@ let page: Page;
 const loadSm = (p: Page) =>
   p.waitForFunction(() => !!(window as any).__sm, null, { timeout: 60_000 });
 
+/**
+ * STEP82 — the live E2E Worker URL.
+ *
+ * Test 6 performs REAL D1 WRITES, so it must run against a dedicated, disposable
+ * E2E deployment and NEVER against production:
+ *
+ *   SAMPLEMAP_E2E_WORKER_URL=https://samplemap-d1-worker-e2e.sumadmusic.workers.dev \
+ *     npx playwright test e2e/global-population.spec.ts
+ *
+ * The E2E Worker is the SAME implementation as production (same `main`, same
+ * migrations, same publish/conflict/dedup semantics) — it is only bound to a
+ * separate D1 database via the `e2e` environment in
+ * `workers/d1-worker/wrangler.toml`.
+ *
+ * The production URL is deliberately NOT baked in as a default. If the variable
+ * is missing the test throws, because silently writing test rows into the
+ * production GlobalSampleIndex database is exactly the failure this guards
+ * against. The production URL is also rejected explicitly.
+ */
+const E2E_WORKER_URL = process.env.SAMPLEMAP_E2E_WORKER_URL;
+
+/** Production Worker. Named only so it can be refused — never a fallback. */
+const PRODUCTION_WORKER_URL = "https://samplemap-d1-worker.sumadmusic.workers.dev";
+
 test.beforeAll(async ({ browser }) => {
   page = await browser.newPage();
   await page.goto("/harness.html");
@@ -205,27 +229,35 @@ test.describe.serial("Step 70 — Automatic Global Population E2E", () => {
     );
   });
 
-  test("6. Real live Cloudflare/D1 Worker: publish, query /map, verify returned points and DOM deduplication", async () => {
-    const workerUrl = "https://samplemap-d1-worker.sumadmusic.workers.dev";
-
+  test("6. Dedicated E2E Cloudflare/D1 Worker: publish, query /map, verify returned points and DOM deduplication", async () => {
     // STEP82 TEST ISOLATION.
     //
-    // The four fixture sampleIds ("samples/kick-909", "samples/hat-airy",
-    // "samples/bass-sub", "samples/lead-ohm") are NOT free in the shared live
-    // D1 database: they were already bound to content hashes from earlier
-    // development runs. The worker never re-points an existing `sample_ref`
-    // (16E §11, no last-write-wins), so re-publishing the *current* analysis
-    // under the same sampleId is correctly rejected with
-    //   "conflict: sample is already mapped to a different content identity".
-    //
-    // This test therefore publishes the SAME content (identical contentHash,
-    // contentHashVersion, analysis, map-v2 position and features) under
-    // per-run, test-only sampleIds. That keeps the live publish -> /map ->
-    // visibility path under test while removing the dependency on the four
-    // historical sampleIds. Nothing about the worker, the conflict semantics or
-    // the production D1 data is changed, and no new analysis is produced: the
-    // candidates are copied from the records analyzed in test 1. The existing
-    // local records are never mutated and keep their own sampleIds.
+    // 1) TARGET: this test WRITES to D1, so it is pinned to the dedicated E2E
+    //    deployment (SAMPLEMAP_E2E_WORKER_URL). There is no production fallback
+    //    — see E2E_WORKER_URL above.
+    if (!E2E_WORKER_URL) {
+      throw new Error(
+        "SAMPLEMAP_E2E_WORKER_URL is not set. Test 6 performs real D1 writes and " +
+          "must not run against production. Point it at the dedicated E2E Worker " +
+          "(the `e2e` environment in workers/d1-worker/wrangler.toml):\n" +
+          "  SAMPLEMAP_E2E_WORKER_URL=https://samplemap-d1-worker-e2e.sumadmusic.workers.dev " +
+          "npx playwright test e2e/global-population.spec.ts",
+      );
+    }
+    if (E2E_WORKER_URL === PRODUCTION_WORKER_URL) {
+      throw new Error(
+        `SAMPLEMAP_E2E_WORKER_URL points at the PRODUCTION worker (${PRODUCTION_WORKER_URL}). ` +
+          "Refusing to write test rows into the production D1 database.",
+      );
+    }
+    const workerUrl = E2E_WORKER_URL;
+
+    // 2) SAMPLE IDs: the E2E D1 is disposable, but the per-run
+    //    `e2e/step82/<runId>/…` sampleIds are still used so a rerun never
+    //    collides with its own previous rows. contentIdentity, analysis,
+    //    map-v2 position and features are carried over verbatim from the
+    //    records analyzed in test 1 — no new analysis, no local mutation, and
+    //    no change to publish/conflict/dedup semantics.
 
     // Check real worker connectivity from browser
     const workerLive = await page.evaluate(async (url) => {
@@ -237,7 +269,7 @@ test.describe.serial("Step 70 — Automatic Global Population E2E", () => {
       }
     }, workerUrl);
 
-    expect(workerLive).toBe(true);
+    expect(workerLive, `E2E worker not reachable at ${workerUrl}`).toBe(true);
 
     // Stash the candidates produced by the real analysis pipeline (test 1).
     // This happens BEFORE connectLiveWorker, because connecting remounts a
@@ -249,7 +281,7 @@ test.describe.serial("Step 70 — Automatic Global Population E2E", () => {
         .map((i: any) => ({ sampleId: i.sampleId, candidate: i.candidate }));
     });
 
-    // 1. Connect harness to real Cloudflare/D1 worker
+    // 1. Connect harness to the dedicated E2E Cloudflare/D1 worker
     await page.evaluate(async (url) => {
       await (window as any).__sm.publish.connectLiveWorker(url);
     }, workerUrl);

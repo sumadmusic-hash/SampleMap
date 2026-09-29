@@ -25,12 +25,42 @@ MAP_DEFAULT_LIMIT = "200"
 MAP_MAX_LIMIT = "1000"
 API_ALLOWED_ORIGIN = "http://localhost:5176, http://localhost:5173, http://127.0.0.1:5173, http://127.0.0.1:5176"
 
-# D1 binding. database_id is a placeholder until real D1 provisioned; local
-# tests never reach this binding (they inject a fake-D1 through the provider).
+# ── PRODUCTION environment ───────────────────────────────────────────────
+# The live GlobalSampleIndex database. Backs the deployed production Worker.
+# NEVER point the E2E suite at this database.
 [[d1_databases]]
 binding = "DB"
 database_name = "samplemap-global"
 database_id = "fc5221fa-57d8-4fd8-ac8c-11b623a06ad6"
+
+# ── E2E environment (STEP82) ──────────────────────────────────────────────
+# A SEPARATE, disposable D1 that exists only so the live E2E test can exercise
+# the real Worker code against a real D1 without ever writing production data.
+# Same Worker implementation, same migrations, different database.
+#
+# Provision / re-provision with (requires Cloudflare login):
+#   npx wrangler d1 create samplemap-global-e2e
+#   npx wrangler d1 migrations apply samplemap-global-e2e --remote -e e2e
+#   npx wrangler deploy -e e2e
+#
+# The E2E test addresses this environment through SAMPLEMAP_E2E_WORKER_URL.
+[env.e2e]
+name = "samplemap-d1-worker-e2e"
+
+# `vars` is NOT inherited by named environments in Wrangler, so the publish
+# caps and CORS allowlist are restated here with identical values. The E2E
+# Worker behaves exactly like production.
+[env.e2e.vars]
+PUBLISH_MAX_BATCH = "100"
+PUBLISH_MAX_BODY_BYTES = "262144"
+MAP_DEFAULT_LIMIT = "200"
+MAP_MAX_LIMIT = "1000"
+API_ALLOWED_ORIGIN = "http://localhost:5176, http://localhost:5173, http://127.0.0.1:5173, http://127.0.0.1:5176"
+
+[[env.e2e.d1_databases]]
+binding = "DB"
+database_name = "samplemap-global-e2e"
+database_id = "1aead96f-fa21-4ab6-93c1-bcd271bd4c81"
 
 # Migrations directory relative to this file.
 [observability]

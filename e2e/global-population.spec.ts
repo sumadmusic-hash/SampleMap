@@ -208,6 +208,25 @@ test.describe.serial("Step 70 — Automatic Global Population E2E", () => {
   test("6. Real live Cloudflare/D1 Worker: publish, query /map, verify returned points and DOM deduplication", async () => {
     const workerUrl = "https://samplemap-d1-worker.sumadmusic.workers.dev";
 
+    // STEP82 TEST ISOLATION.
+    //
+    // The four fixture sampleIds ("samples/kick-909", "samples/hat-airy",
+    // "samples/bass-sub", "samples/lead-ohm") are NOT free in the shared live
+    // D1 database: they were already bound to content hashes from earlier
+    // development runs. The worker never re-points an existing `sample_ref`
+    // (16E §11, no last-write-wins), so re-publishing the *current* analysis
+    // under the same sampleId is correctly rejected with
+    //   "conflict: sample is already mapped to a different content identity".
+    //
+    // This test therefore publishes the SAME content (identical contentHash,
+    // contentHashVersion, analysis, map-v2 position and features) under
+    // per-run, test-only sampleIds. That keeps the live publish -> /map ->
+    // visibility path under test while removing the dependency on the four
+    // historical sampleIds. Nothing about the worker, the conflict semantics or
+    // the production D1 data is changed, and no new analysis is produced: the
+    // candidates are copied from the records analyzed in test 1. The existing
+    // local records are never mutated and keep their own sampleIds.
+
     // Check real worker connectivity from browser
     const workerLive = await page.evaluate(async (url) => {
       try {
@@ -220,24 +239,106 @@ test.describe.serial("Step 70 — Automatic Global Population E2E", () => {
 
     expect(workerLive).toBe(true);
 
+    // Stash the candidates produced by the real analysis pipeline (test 1).
+    // This happens BEFORE connectLiveWorker, because connecting remounts a
+    // fresh, empty publish queue.
+    await page.evaluate(() => {
+      const sm = (window as any).__sm;
+      (window as any).__step82Source = sm.publish.queue
+        .snapshot()
+        .map((i: any) => ({ sampleId: i.sampleId, candidate: i.candidate }));
+    });
+
     // 1. Connect harness to real Cloudflare/D1 worker
     await page.evaluate(async (url) => {
       await (window as any).__sm.publish.connectLiveWorker(url);
     }, workerUrl);
 
-    // 2. Clear any lingering in-memory queue state and run real populate
-    await page.evaluate(async () => {
-      (window as any).__sm.publish.clear();
-      // Ensure all 4 analyzed fixture records are in pending state for this live publish test
-      const records = await (window as any).__sm.index.getAll();
-      for (const rec of records) {
-        await (window as any).__sm.index.put({
-          ...rec,
-          globalPublish: undefined,
+    // Snapshot the local publish state so we can prove it is never mutated.
+    const localBefore = await page.evaluate(() =>
+      (window as any).__sm.index
+        .getAll()
+        .then((rs: any[]) =>
+          rs.map((r: any) => ({
+            sampleId: r.sampleId,
+            contentHash: r.contentHash,
+            contentHashVersion: r.contentHashVersion,
+            delivery: r.globalPublish?.delivery ?? null,
+          })),
+        ),
+    );
+    expect(localBefore).toHaveLength(4);
+
+    // 2. Re-key the analyzed candidates onto unique per-run test sampleIds.
+    //    Only the top-level `sampleId` (the sample_ref edge) changes; the
+    //    contentIdentity, analysis and features are carried over verbatim.
+    const runId = crypto.randomUUID();
+    const testSampleIdPrefix = `e2e/step82/${runId}/`;
+    const assigned = await page.evaluate((prefix: string) => {
+      const sm = (window as any).__sm;
+      const source: any[] = (window as any).__step82Source;
+      if (!Array.isArray(source) || source.length !== 4) {
+        throw new Error(
+          `expected 4 analyzed candidates, got ${source?.length ?? "none"}`,
+        );
+      }
+      // Start from an empty queue so the four fixture sampleIds are never sent.
+      sm.publish.clear();
+      const mapped: {
+        testSampleId: string;
+        sourceSampleId: string;
+        contentHash: string;
+        contentHashVersion: string;
+        mapVersion: string;
+        x: number;
+        y: number;
+        primaryClass: string;
+      }[] = [];
+      for (const item of source) {
+        const slug = item.sampleId.split("/").pop() ?? item.sampleId;
+        const testSampleId = `${prefix}${slug}`;
+        const result = sm.publish.queue.enqueue({
+          ...item.candidate,
+          sampleId: testSampleId,
+        });
+        if (result !== "queued") {
+          throw new Error(`enqueue refused for ${testSampleId}: ${result}`);
+        }
+        mapped.push({
+          testSampleId,
+          sourceSampleId: item.sampleId,
+          contentHash: item.candidate.contentIdentity.contentHash,
+          contentHashVersion: item.candidate.contentIdentity.contentHashVersion,
+          mapVersion: item.candidate.analysis.map.mapVersion,
+          x: item.candidate.analysis.map.x,
+          y: item.candidate.analysis.map.y,
+          primaryClass: item.candidate.analysis.primaryClass,
         });
       }
-      await (window as any).__sm.publish.populate();
-    });
+      return mapped;
+    }, testSampleIdPrefix);
+
+    expect(assigned).toHaveLength(4);
+    // Every test id is unique and carries the per-run prefix.
+    expect(new Set(assigned.map((a) => a.testSampleId)).size).toBe(4);
+    for (const a of assigned) {
+      expect(a.testSampleId.startsWith(testSampleIdPrefix)).toBe(true);
+      // Requirement: payload really is the current analyzed fixture content.
+      expect(a.contentHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(a.contentHashVersion).toBe("pcm-v1");
+      expect(a.mapVersion).toBe("map-v2");
+      expect(a.x).toBeGreaterThanOrEqual(0);
+      expect(a.x).toBeLessThanOrEqual(1);
+      expect(a.y).toBeGreaterThanOrEqual(0);
+      expect(a.y).toBeLessThanOrEqual(1);
+    }
+    // The candidates are the ones from the real pipeline, one per fixture.
+    expect(assigned.map((a) => a.sourceSampleId).sort()).toEqual([
+      "samples/bass-sub",
+      "samples/hat-airy",
+      "samples/kick-909",
+      "samples/lead-ohm",
+    ]);
 
     const pendingCount = await page.evaluate(
       () => (window as any).__sm.publish.queue.pendingCount,
@@ -250,16 +351,80 @@ test.describe.serial("Step 70 — Automatic Global Population E2E", () => {
     });
 
     expect(liveFlush.submitted).toBe(4);
-    expect(liveFlush.succeeded).toBe(4);
-    expect(liveFlush.rejected).toBe(0);
 
-    // Verify all 4 local records are marked 'published'
-    const records = await page.evaluate(() => (window as any).__sm.index.getAll());
-    for (const rec of records) {
-      expect(rec.globalPublish?.delivery).toBe("published");
+    // Evaluate the REAL per-item provider response before trusting any counter.
+    // `lastOutcome` is the verbatim `GlobalPublishItemOutcome` the provider
+    // returned for that sampleId during this flush.
+    const itemStates = await page.evaluate(() =>
+      (window as any).__sm.publish.queue
+        .snapshot()
+        .map((i: any) => ({
+          sampleId: i.sampleId,
+          status: i.status,
+          attempts: i.attempts,
+          lastError: i.lastError ?? null,
+          lastOutcome: i.lastOutcome ?? null,
+        })),
+    );
+    expect(itemStates).toHaveLength(4);
+
+    const describeItems = (items: any[]) =>
+      items
+        .map(
+          (i) =>
+            `sampleId=${i.sampleId} status=${i.status} outcome=${JSON.stringify(i.lastOutcome)} lastError=${i.lastError ?? "-"}`,
+        )
+        .join("\n    ");
+
+    // No item may be rejected — in particular there must be no conflict.
+    const notSucceeded = itemStates.filter((i) => i.status !== "succeeded");
+    expect(
+      notSucceeded,
+      `provider did not accept every item:\n    ${describeItems(notSucceeded)}`,
+    ).toEqual([]);
+
+    // "stored" and "already-known" are both acceptable; "rejected" is not.
+    for (const item of itemStates) {
+      expect(
+        ["stored", "already-known"],
+        `unexpected provider status for ${item.sampleId}: ${JSON.stringify(item.lastOutcome)}`,
+      ).toContain(item.lastOutcome?.status);
+      const reason = String(item.lastOutcome?.reason ?? "");
+      expect(
+        reason.toLowerCase(),
+        `conflict/reason reported for ${item.sampleId}: ${reason}`,
+      ).not.toContain("conflict");
+      expect(item.lastError).toBeNull();
     }
 
-    // 4. Query global points from real Worker
+    expect(liveFlush.succeeded).toBe(4);
+    expect(liveFlush.rejected).toBe(0);
+    expect(liveFlush.retryable).toBe(0);
+
+    // 4. Local test publish state: the per-run test sampleIds match no local
+    //    record, so a live success must NOT upgrade or corrupt any local marker,
+    //    and the analyzed fixture records must be byte-for-byte unchanged.
+    expect(liveFlush.markedPublished).toBe(0);
+    const localAfter = await page.evaluate(() =>
+      (window as any).__sm.index
+        .getAll()
+        .then((rs: any[]) =>
+          rs.map((r: any) => ({
+            sampleId: r.sampleId,
+            contentHash: r.contentHash,
+            contentHashVersion: r.contentHashVersion,
+            delivery: r.globalPublish?.delivery ?? null,
+          })),
+        ),
+    );
+    expect(localAfter).toEqual(localBefore);
+    // The local records still keep their real sampleIds (never re-keyed).
+    for (const a of assigned) {
+      expect(localAfter.map((r) => r.sampleId)).toContain(a.sourceSampleId);
+      expect(localAfter.map((r) => r.sampleId)).not.toContain(a.testSampleId);
+    }
+
+    // 5. Query global points from real Worker
     await page.evaluate(async () => {
       await (window as any).__sm.app.refreshGlobalPoints();
     });
@@ -277,13 +442,39 @@ test.describe.serial("Step 70 — Automatic Global Population E2E", () => {
     );
     expect(globalPoints.length).toBeGreaterThanOrEqual(4);
 
-    const fixtureHashes = new Set(records.map((r: any) => r.contentHash));
+    // /map (read straight from the live provider) must return the four current
+    // content identities, and app.refreshGlobalPoints() must hold the same set.
+    const directMap = await page.evaluate(() =>
+      (window as any).__sm.publish.provider.queryMapViewport({
+        mapVersion: "map-v2",
+        xMin: 0,
+        xMax: 1,
+        yMin: 0,
+        yMax: 1,
+        limit: 200,
+      }),
+    );
+    const identityOf = (p: any) =>
+      `${p.contentIdentity.contentHashVersion}:${p.contentIdentity.contentHash}`;
+    const directKeys = new Set(directMap.points.map(identityOf));
+    for (const a of assigned) {
+      expect(
+        directKeys.has(`${a.contentHashVersion}:${a.contentHash}`),
+        `/map is missing the published content identity for ${a.testSampleId} (${a.contentHash})`,
+      ).toBe(true);
+    }
+    const appKeys = new Set(globalPoints.map(identityOf));
+    for (const key of directKeys) {
+      expect(appKeys.has(key)).toBe(true);
+    }
+
+    const fixtureHashes = new Set(assigned.map((a) => a.contentHash));
     const matchedPoints = globalPoints.filter((pt: any) =>
       fixtureHashes.has(pt.contentIdentity.contentHash),
     );
     expect(matchedPoints).toHaveLength(4);
 
-    // 5. Test Global ON + My OFF -> Local records that are also global
+    // 6. Test Global ON + My OFF -> Local records that are also global
     //    visibleMapRecords only contains LOCAL records whose content identity
     //    is in the global set — global-only points (from prior D1 runs) don't
     //    appear here. So we expect exactly 4 (our fixture records).
@@ -297,7 +488,7 @@ test.describe.serial("Step 70 — Automatic Global Population E2E", () => {
     );
     expect(globalOnlyCount).toBe(4);
 
-    // 6. Test Global ON + My ON -> Union of Global and My Samples
+    // 7. Test Global ON + My ON -> Union of Global and My Samples
     //    All 4 local records are both "mine" and "global" → union = 4.
     await page.evaluate(() =>
       (window as any).__sm.app.setVisibility({ global: true, mine: true }),
@@ -309,18 +500,68 @@ test.describe.serial("Step 70 — Automatic Global Population E2E", () => {
     );
     expect(unionCount).toBe(4);
 
-    // 7. Verify DOM rendered circles: no duplicates
+    // 8. Verify the rendered DOM circles.
+    //
+    //    Dedup happens by CONTENT IDENTITY (mergeMapPoints), so the correct
+    //    invariant is: exactly one circle per content identity, local points
+    //    winning over global points. It is deliberately NOT "every data-sample-id
+    //    is unique": the shared live D1 still holds the four historical content
+    //    identities that the fixture sampleIds are bound to, and those rows
+    //    legitimately render under the same sampleId as the current local
+    //    record — two different contents, one sampleId. Asserting id-uniqueness
+    //    would make the test depend on that stale production data.
     const domInfo = await page.evaluate(() => {
+      const app = (window as any).__sm.app;
       const circles = Array.from(
         document.querySelectorAll("circle[data-sample-id]"),
       );
-      const ids = circles.map((c) => c.getAttribute("data-sample-id")!);
-      const duplicates = ids.filter((v, i, a) => a.indexOf(v) !== i);
-      return { total: ids.length, duplicates };
-    });
-    expect(domInfo.duplicates).toEqual([]);
+      const ids = circles
+        .map((c) => c.getAttribute("data-sample-id")!)
+        .sort();
 
-    // 8. Test Global OFF + My ON -> Exactly 4 local samples
+      const keyOf = (id: { contentHash: string; contentHashVersion: string }) =>
+        `${id.contentHashVersion}:${id.contentHash}`;
+      // Expected multiset: one id per content identity in local ∪ global,
+      // local winning.
+      const localByKey = new Map<string, string>();
+      for (const r of app.visibleMapRecords) {
+        localByKey.set(
+          keyOf({
+            contentHash: r.contentHash,
+            contentHashVersion: r.contentHashVersion,
+          }),
+          r.sampleId,
+        );
+      }
+      const globalByKey = new Map<string, string>();
+      for (const p of app.globalPoints) {
+        globalByKey.set(keyOf(p.contentIdentity), p.representativeSampleId);
+      }
+      const keys = new Set([...localByKey.keys(), ...globalByKey.keys()]);
+      const expected = [...keys]
+        .map((k) => localByKey.get(k) ?? globalByKey.get(k)!)
+        .sort();
+
+      return {
+        total: ids.length,
+        ids,
+        expected,
+        contentIdentities: keys.size,
+      };
+    });
+    expect(domInfo.ids).toEqual(domInfo.expected);
+    expect(domInfo.total).toBe(domInfo.contentIdentities);
+    // The four analyzed fixture samples are on the map under their real
+    // sampleIds; the test-only re-keyed publish ids never reach the UI.
+    for (const a of assigned) {
+      expect(domInfo.ids).toContain(a.sourceSampleId);
+      expect(domInfo.ids).not.toContain(a.testSampleId);
+    }
+    for (const id of domInfo.ids) {
+      expect(id.startsWith("e2e/step82/")).toBe(false);
+    }
+
+    // 9. Test Global OFF + My ON -> Exactly 4 local samples
     await page.evaluate(() =>
       (window as any).__sm.app.setVisibility({ global: false, mine: true }),
     );
@@ -330,7 +571,7 @@ test.describe.serial("Step 70 — Automatic Global Population E2E", () => {
     );
     expect(mineOnlyCount).toBe(4);
 
-    // 9. Test Global OFF + My OFF -> 0 points
+    // 10. Test Global OFF + My OFF -> 0 points
     await page.evaluate(() =>
       (window as any).__sm.app.setVisibility({ global: false, mine: false }),
     );

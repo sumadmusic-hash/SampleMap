@@ -218,8 +218,11 @@ export async function buildBrowserDeps(opts: {
   };
 
   // Page fetcher wraps the real samples.list client (existing API).
-  const pageFetcher: PageFetcher = async ({ pageSize, pageToken }) => {
-    const res = await opts.client.samples.list({ pageSize, pageToken });
+  // STEP81: `orderBy` is forwarded VERBATIM (it is undefined for the own-library
+  // scan, so that path is unchanged). Without this pass-through the public
+  // discovery lanes would silently fall back to the default listing order.
+  const pageFetcher: PageFetcher = async ({ pageSize, pageToken, orderBy }) => {
+    const res = await opts.client.samples.list({ pageSize, pageToken, orderBy });
     if (res instanceof Error) throw res;
     return { samples: res.samples, nextPageToken: res.nextPageToken };
   };

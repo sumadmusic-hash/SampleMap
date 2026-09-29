@@ -701,6 +701,17 @@ export class SampleMapApp {
   previewError: string | undefined;
 
   private runner: JobRunner | undefined;
+  /**
+   * STEP80 — the settled-later promise of the analysis run that is currently in
+   * flight (`undefined` when no run was ever started).
+   *
+   * `analyze()` starts the runner ITSELF and wires its own progress handling;
+   * this is only a single reference to that very same run, never a second run.
+   * The public discovery round uses it to WAIT for an already running analysis
+   * (instead of starting another one) and then decide about one follow-up run.
+   * It changes no analysis/pipeline/runner behaviour.
+   */
+  private currentAnalysisRun: Promise<void> | undefined;
   private previewHandleValue: PreviewHandle | undefined;
   /** SM-AUDIT-007: generation counter so stale in-flight previews are discarded. */
   private previewEpoch = 0;
@@ -901,8 +912,12 @@ if (this.scanAborted) {
     this.analysis.skipped = 0;
     this.analysis.gone = 0;
     this.runner = this.deps.createRunner(budget, () => this.applyLiveProgress());
-    void this.runner.start().then(
-      (p) => this.applyProgress(p),
+    // STEP80 — keep ONE reference to the run started here, so callers that must
+    // not start a parallel run (public discovery) can await exactly this run.
+    this.currentAnalysisRun = this.runner.start().then(
+      (p) => {
+        this.applyProgress(p);
+      },
       (e) => {
         this.analysis.status = "stopped";
         this.analysis.error = e instanceof Error ? e.message : String(e);
@@ -1005,8 +1020,21 @@ if (this.scanAborted) {
       if (this.analysis.status !== "running") {
         const due = await this.deps.queue.nextDue(1);
         if (due.length > 0) {
-          const runner = this.analyze(BACKGROUND_INDEXING_BUDGET);
-          await runner.start().catch(() => undefined);
+          this.analyze(BACKGROUND_INDEXING_BUDGET);
+        }
+      } else {
+        // STEP80: race window — an analysis run IS currently in flight. We must
+        // NOT start a parallel run here. Instead, we WAIT for this running run
+        // to finish (or settle), because new public jobs may have been enqueued
+        // just before it completed. Once it settles, we check ONCE if there are
+        // still due jobs and, if so, start EXACTLY one follow-up run. This is
+        // the smallest possible coordination with the existing architecture.
+        if (this.currentAnalysisRun !== undefined) {
+          await this.currentAnalysisRun.catch(() => undefined);
+        }
+        const due = await this.deps.queue.nextDue(1);
+        if (due.length > 0 && this.analysis.status !== "running") {
+          this.analyze(BACKGROUND_INDEXING_BUDGET);
         }
       }
 

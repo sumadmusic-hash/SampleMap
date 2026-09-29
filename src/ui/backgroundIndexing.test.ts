@@ -12,6 +12,7 @@ import type { AnalysisPipeline } from "../pipeline/analysisPipeline";
 import type { LibraryScanResult } from "../library/libraryScanner";
 import { mapPoints } from "./map/mapView";
 import { makeFeatures } from "../classify/test-helpers";
+import { makeSampleMeta } from "../library/test-helpers";
 
 const BUILD = "build-v1";
 
@@ -145,6 +146,23 @@ async function waitFor(pred: () => boolean, ms = 3000): Promise<void> {
     await new Promise((r) => setTimeout(r, 2));
   }
   throw new Error(`waitFor timed out: ${pred()}`);
+}
+
+/**
+ * Same, for conditions that need a real IndexedDB round trip. A bare
+ * `queue.get(...) !== undefined` would be a Promise (always truthy) and could
+ * pass without the state ever having been reached.
+ */
+async function waitForAsync(
+  pred: () => Promise<boolean>,
+  ms = 3000,
+): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (await pred()) return;
+    await new Promise((r) => setTimeout(r, 2));
+  }
+  throw new Error("waitForAsync timed out");
 }
 
 async function rig(
@@ -452,6 +470,367 @@ describe("automatic background indexing", () => {
 
       expect(r.scanCalls()).toBe(1);
       expect(r.budgets).toEqual([]);
+    } finally {
+      await r.db.db.close();
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP80 — public discovery ↔ analysis coordination.
+//
+// Regression cover for the double-start bug in `runPublicDiscoveryRound()`:
+// `analyze()` starts the JobRunner ITSELF, so the extra `runner.start()` threw
+// "job runner is already running" and the follow-up analysis of newly
+// discovered public jobs never happened.
+//
+// These tests use the REAL JobRunner over the REAL QueueStore + IndexStore on
+// fake-indexeddb, the REAL `discoverPublicSamples()` (via a real `PageFetcher`),
+// and only double the analysis PIPELINE — so "was something analysed?" and
+// "how many runs were started?" are answered by real state, not by a stub.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface DiscoveryRig extends Rig {
+  /** The public samples the fake `PageFetcher` will serve. */
+  setListing: (metas: SampleMeta[]) => void;
+  /** Max number of concurrently running pipelines observed. */
+  maxParallelRuns: () => number;
+  /** How often `start()` was called on a JobRunner (one per real run). */
+  startCalls: () => number;
+  /**
+   * Pin the public listing open, so the discovery round can be made to finish
+   * AFTER the automatic analysis run has already ended. This is the
+   * deterministic trigger for the double start: no run is in flight any more,
+   * so `runPublicDiscoveryRound()` takes its `analyze()` branch and — with the
+   * bug — additionally calls `runner.start()` on the runner `analyze()` just
+   * started itself.
+   */
+  holdDiscovery: () => void;
+  releaseDiscovery: () => void;
+}
+
+async function discoveryRig(opts: { hold?: boolean } = {}): Promise<DiscoveryRig> {
+  const handle = await openDb();
+  const budgets: AnalysisBudget[] = [];
+  const order: string[] = [];
+  const pd = makePipelineDouble(handle.index as never);
+  if (opts.hold) pd.hold();
+
+  // Track real pipeline concurrency: `run()` is only entered while a runner is
+  // actually working, so overlapping entries prove parallel analysis runs.
+  let inFlight = 0;
+  let maxParallel = 0;
+  const inner = (pd.pipeline as unknown as { run: (id: string) => unknown }).run;
+  (pd.pipeline as unknown as { run: (id: string) => unknown }).run = async (id: string) => {
+    inFlight += 1;
+    maxParallel = Math.max(maxParallel, inFlight);
+    try {
+      return await inner(id);
+    } finally {
+      inFlight -= 1;
+    }
+  };
+
+  // Count `start()` invocations on the REAL JobRunner. A double start would
+  // show up here as 2 starts for one run (and the real runner would throw
+  // "job runner is already running").
+  let starts = 0;
+
+  // The public listing the REAL discovery module will walk.
+  let listing: SampleMeta[] = [makeSampleMeta("samples/public-1")];
+  // Lets a test hold the discovery round open (see `holdDiscovery`).
+  let discoveryGate: Promise<void> | undefined;
+  let openDiscovery: (() => void) | undefined;
+
+  const scanResult: LibraryScanResult = {
+    added: [meta("samples/new-1")],
+    changed: [],
+    unchangedCount: 0,
+    seenSampleIds: ["samples/new-1"],
+    pageCount: 1,
+    latestKnown: "2026-01-01T00:00:00.000Z",
+    fullScan: true,
+  };
+  let scanCalls = 0;
+
+  const consent = createMemoryEp7ConsentStore();
+  consent.grant();
+
+  const deps: Partial<SampleMapAppDeps> = {
+    queue: handle.queue,
+    index: handle.index,
+    // STEP80: enable the public discovery round with the REAL shared db handle
+    // (the very same `ElasticDB` the stores use — no second database).
+    dbForDiscovery: handle.db,
+    search: new SampleMapSearchEngine(handle.index) as never,
+    preview: { dispose: () => undefined } as never,
+    machiniste: { send: () => undefined } as never,
+    createRunner: ((budget: AnalysisBudget) => {
+      budgets.push(budget);
+      order.push("analyze");
+      const runner = new JobRunner({
+        pipeline: pd.pipeline,
+        queue: handle.queue,
+        analysisBuild: BUILD,
+        budget,
+      });
+      const realStart = runner.start.bind(runner);
+      runner.start = (() => {
+        starts += 1;
+        return realStart();
+      }) as typeof runner.start;
+      return runner;
+    }) as SampleMapAppDeps["createRunner"],
+    scanFn: (async () => {
+      scanCalls++;
+      order.push("scan");
+      return scanResult;
+    }) as never,
+    // REAL `PageFetcher` contract, one page, no token → discovery exhausts.
+    fetchPage: (async () => {
+      if (discoveryGate) await discoveryGate;
+      return { samples: listing, nextPageToken: "" };
+    }) as never,
+    known: { getUpdatedAt: async () => undefined },
+    previewUrlFor: () => undefined,
+    analysisBuild: BUILD,
+    authenticatedUserId: "users/alice",
+    ep7Consent: consent,
+  };
+  const app = new SampleMapApp(deps as SampleMapAppDeps);
+
+  return {
+    app,
+    db: handle,
+    budgets,
+    order,
+    pd,
+    scanCalls: () => scanCalls,
+    holdScan: () => undefined,
+    releaseScan: () => undefined,
+    settle: async () => {
+      for (let i = 0; i < 400; i++) {
+        if (app.analysis.status !== "running") return;
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      throw new Error("analysis run did not settle");
+    },
+    setListing: (metas) => {
+      listing = metas;
+    },
+    maxParallelRuns: () => maxParallel,
+    startCalls: () => starts,
+    holdDiscovery: () => {
+      discoveryGate = new Promise<void>((res) => {
+        openDiscovery = res;
+      });
+    },
+    releaseDiscovery: () => {
+      discoveryGate = undefined;
+      openDiscovery?.();
+    },
+  };
+}
+
+describe("STEP80 public discovery ↔ analysis coordination", () => {
+  it("A. starts the analysis exactly once (no double start of the runner)", async () => {
+    const r = await discoveryRig();
+    try {
+      await r.app.startBackgroundIndexing();
+      await r.settle();
+
+      // One runner created, one analysis run. Both the own scan job and the
+      // discovered public job were analysed by that single run.
+      expect(r.budgets).toEqual([BACKGROUND_INDEXING_BUDGET]);
+      expect(r.pd.analysed.sort()).toEqual(["samples/new-1", "samples/public-1"]);
+      // The direct regression assertion: `start()` was called EXACTLY ONCE.
+      // With the old code the discovery round started the runner a second time
+      // (which the real JobRunner rejects with "job runner is already running").
+      expect(r.startCalls()).toBe(1);
+      expect(r.maxParallelRuns()).toBe(1);
+      expect(r.app.analysis.analyzed).toBe(2);
+    } finally {
+      await r.db.db.close();
+    }
+  });
+
+  it("A2. no double start when discovery finds due work AFTER a run already ended", async () => {
+    // This is the exact shape of the STEP80 bug: the discovery round completes
+    // while NO run is in flight, so it takes the `analyze()` branch — and with
+    // the bug additionally called `runner.start()` on the very runner that
+    // `analyze()` had just started itself.
+    const r = await discoveryRig();
+    try {
+      r.holdDiscovery();
+
+      await r.app.startBackgroundIndexing();
+      // The automatic run for the own scan job runs and finishes while the
+      // discovery round is still waiting on the listing.
+      await waitFor(() => r.app.analysis.status !== "running");
+      expect(r.pd.analysed).toEqual(["samples/new-1"]);
+      expect(r.startCalls()).toBe(1);
+
+      // Release discovery: it enqueues samples/public-1, no run is in flight,
+      // so it starts exactly ONE run and must NOT start it a second time.
+      r.releaseDiscovery();
+      await waitFor(() =>
+        r.pd.analysed.includes("samples/public-1"),
+      );
+      await r.settle();
+      await flush();
+
+      // Two runs total (one for the own job, one for the discovered job) and
+      // exactly two `start()` calls — no extra, rejected second start.
+      expect(r.startCalls()).toBe(2);
+      expect(r.budgets).toEqual([
+        BACKGROUND_INDEXING_BUDGET,
+        BACKGROUND_INDEXING_BUDGET,
+      ]);
+      expect(r.maxParallelRuns()).toBe(1);
+      expect((await r.db.queue.get("samples/public-1"))?.status).toBe("analyzed");
+    } finally {
+      r.releaseDiscovery();
+      await r.db.db.close();
+    }
+  });
+
+  it("B. discovery during a running analysis starts NO parallel run", async () => {
+    const r = await discoveryRig({ hold: true });
+    try {
+      // Start the automatic workflow; the pipeline is HELD, so the background
+      // run is genuinely in flight while discovery is still working.
+      await r.app.startBackgroundIndexing();
+      await waitFor(() => r.app.analysis.status === "running");
+      await waitForAsync(
+        async () => (await r.db.queue.get("samples/public-1")) !== undefined,
+      );
+
+      // The held run is still on samples/new-1; the discovered job is queued
+      // but NOT yet consumed. Exactly one runner exists.
+      expect(r.budgets).toEqual([BACKGROUND_INDEXING_BUDGET]);
+      expect((await r.db.queue.get("samples/public-1"))?.status).toBe("queued");
+
+      r.pd.release();
+      await r.settle();
+      await flush();
+
+      // Never two runs at the same time, and still only one run: the running
+      // one absorbed the discovered job through its own nextDue loop.
+      expect(r.startCalls()).toBe(1);
+      expect(r.maxParallelRuns()).toBe(1);
+      expect(r.budgets).toEqual([BACKGROUND_INDEXING_BUDGET]);
+      expect(r.pd.analysed.sort()).toEqual(["samples/new-1", "samples/public-1"]);
+    } finally {
+      r.pd.release();
+      await r.db.db.close();
+    }
+  });
+
+  it("B2. a run that ends with the discovered job still due triggers EXACTLY ONE follow-up", async () => {
+    const r = await discoveryRig({ hold: true });
+    try {
+      await r.app.startBackgroundIndexing();
+      await waitFor(() => r.app.analysis.status === "running");
+      await waitForAsync(
+        async () => (await r.db.queue.get("samples/public-1")) !== undefined,
+      );
+
+      // Pause the in-flight run so it stops WITHOUT consuming the discovered
+      // job. This is the "run finished, discovery's job still due" window.
+      r.app.pause();
+      r.pd.release();
+      await waitFor(() => r.app.analysis.status !== "running");
+
+      // The discovered job is still due: exactly ONE follow-up run picks it up.
+      await waitFor(() => r.pd.analysed.includes("samples/public-1"));
+      await r.settle();
+      await flush();
+
+      // Two runs total (the paused one + exactly one follow-up), each started
+      // exactly once, and never two at the same time.
+      expect(r.startCalls()).toBe(2);
+      expect(r.budgets).toEqual([
+        BACKGROUND_INDEXING_BUDGET,
+        BACKGROUND_INDEXING_BUDGET,
+      ]);
+      expect(r.maxParallelRuns()).toBe(1);
+      expect((await r.db.queue.get("samples/public-1"))?.status).toBe("analyzed");
+    } finally {
+      r.pd.release();
+      await r.db.db.close();
+    }
+  });
+
+  it("C. discovery that adds no new jobs starts NO additional analysis run", async () => {
+    const r = await discoveryRig();
+    try {
+      // The public sample is already known locally, so discovery enqueues
+      // nothing: it must not trigger any extra run on top of the automatic one.
+      await r.db.queue.enqueue("samples/public-1", BUILD);
+      const job = await r.db.queue.get("samples/public-1");
+      await r.db.queue.markAnalyzed(job!);
+
+      await r.app.startBackgroundIndexing();
+      await r.settle();
+      await flush();
+
+      // Only the own scan job produced a run; discovery added nothing.
+      expect(r.startCalls()).toBe(1);
+      expect(r.budgets).toEqual([BACKGROUND_INDEXING_BUDGET]);
+      expect(r.pd.analysed).toEqual(["samples/new-1"]);
+      expect(r.maxParallelRuns()).toBe(1);
+    } finally {
+      await r.db.db.close();
+    }
+  });
+
+  it("D. a second automatic start creates NO additional parallel analysis run", async () => {
+    const r = await discoveryRig({ hold: true });
+    try {
+      await Promise.all([
+        r.app.startBackgroundIndexing(),
+        r.app.startBackgroundIndexing(),
+      ]);
+      await r.app.startBackgroundIndexing();
+      await waitFor(() => r.app.analysis.status === "running");
+      // Wait until the held pipeline was really entered, so the concurrency
+      // counter below has actually observed the run.
+      await waitFor(() => r.pd.analysed.length > 0);
+
+      // One scan, one runner, one start — the repeats collapsed into the same run.
+      expect(r.scanCalls()).toBe(1);
+      expect(r.startCalls()).toBe(1);
+      expect(r.budgets).toEqual([BACKGROUND_INDEXING_BUDGET]);
+      expect(r.maxParallelRuns()).toBe(1);
+
+      r.pd.release();
+      await r.settle();
+      expect(r.startCalls()).toBe(1);
+      expect(r.budgets).toEqual([BACKGROUND_INDEXING_BUDGET]);
+      expect(r.pd.analysed.sort()).toEqual(["samples/new-1", "samples/public-1"]);
+    } finally {
+      r.pd.release();
+      await r.db.db.close();
+    }
+  });
+
+  it("E. does not re-analyze already analyzed samples (discovery + scan idempotency)", async () => {
+    const r = await discoveryRig();
+    try {
+      // A completed job of the SAME build for the discovered public sample.
+      await r.db.queue.enqueue("samples/public-1", BUILD);
+      const done = await r.db.queue.get("samples/public-1");
+      await r.db.queue.markAnalyzed(done!);
+
+      await r.app.startBackgroundIndexing();
+      await r.settle();
+      await flush();
+
+      // The public sample was never analysed again; only the new own sample.
+      expect(r.startCalls()).toBe(1);
+      expect(r.pd.analysed).toEqual(["samples/new-1"]);
+      expect((await r.db.queue.get("samples/public-1"))?.status).toBe("analyzed");
+      expect(r.budgets).toEqual([BACKGROUND_INDEXING_BUDGET]);
     } finally {
       await r.db.db.close();
     }

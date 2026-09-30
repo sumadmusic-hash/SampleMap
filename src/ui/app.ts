@@ -2908,6 +2908,31 @@ if (this.scanAborted) {
         { kind: "send", sampleId, result },
       );
     }
+    // STEP83 — live delivery of the just-accepted candidates.
+    //
+    // This is NOT a second publish mechanism: it is the SAME
+    // `flushPendingPublications({ index, queue })` the analysis-completion path
+    // already uses, called ONCE after every `acceptUsageAndEnqueue()` above has
+    // completed (never per sample). Offline stays exactly as before: no flush,
+    // the items keep `delivery: "pending"` and are delivered by the next live
+    // session / explicit flush.
+    //
+    // The verified Machiniste transfer stands on its own: a failing flush is
+    // swallowed here so it can never be reported as a send failure. Per-item
+    // retry/terminal classification stays entirely inside the existing
+    // queue/retry system, and a rejected item simply keeps its `pending` marker.
+    if (this.globalPublishDeliveryMode === "live") {
+      const { index, globalPublishQueue } = this.deps;
+      try {
+        await flushPendingPublications({ index, queue: globalPublishQueue });
+        // Newly published content becomes visible without a manual reload, via
+        // the existing global map read path only.
+        void this.refreshGlobalPoints().catch(() => {});
+      } catch {
+        // Publish delivery must never fail the verified transfer. The queue's
+        // own retry/backoff keeps every undelivered item retryable.
+      }
+    }
     // Re-sync the record registry so the persisted acceptance markers are
     // reflected immediately by the read-only publish-status surface.
     await this.refreshSearch();

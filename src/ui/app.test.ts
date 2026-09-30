@@ -2147,3 +2147,291 @@ describe("SampleMap UI : automatic global population (Step 70)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// STEP83 — live publish delivery after a VERIFIED UI Machiniste send.
+//
+// The real UI path is:
+//   sendToMachiniste() -> verified transfer -> recordVerifiedUsage()
+//   -> acceptUsageAndEnqueue() -> delivery "pending" -> queue.enqueue()
+// and, when the bootstrap delivery mode is "live", ONE existing
+// `flushPendingPublications({ index, queue })` afterwards.
+//
+// These tests assert that single existing flush is what runs (no second
+// publish mechanism), that it is skipped entirely offline, and that a publish
+// failure can never turn a verified transfer into a failed send.
+// ---------------------------------------------------------------------------
+
+describe("SampleMap UI : STEP83 live publish after verified Machiniste send", () => {
+  /** A provider that records every publishAnalysisResults() call. */
+  function makePublishProvider(
+    outcome: (batch: readonly { sampleId: string }[]) => unknown,
+  ) {
+    const calls: { batch: readonly { sampleId: string }[] }[] = [];
+    const provider: GlobalSampleIndex = {
+      async lookupSamples() { return []; },
+      async lookupContentIdentities() { return []; },
+      async queryMapViewport() { return { mapVersion: "map-v2", points: [] }; },
+      async publishAnalysisResults(batch) {
+        calls.push({ batch });
+        return outcome(batch) as never;
+      },
+    };
+    return { provider, calls };
+  }
+
+  /** An analyzed, gate-passed record (publish-eligible). */
+  function analyzedRecord(sampleId: string) {
+    const features = makeFeatures();
+    return makeSample(sampleId, {
+      primaryClass: "kick",
+      confidence: 0.9,
+      analyzedAt: "2026-03-01T00:00:00.000Z",
+      analysisBuild: BUILD,
+      mapPosition: { x: 0.5, y: 0.5 },
+      contentHash: "a".repeat(64),
+      contentHashVersion: "pcm-v1",
+      analysisSourceFormat: "wav",
+      similarityFingerprint: computeSimilarityFingerprint(features),
+      audioFeatures: features,
+    });
+  }
+
+  /** A fully verified single-slot send result (16G success boundary). */
+  function verifiedSend(sampleId: string) {
+    return {
+      machinisteId: "mach-1",
+      committed: true,
+      errors: [],
+      slots: [
+        {
+          slot: 0,
+          sampleName: sampleId,
+          applied: true,
+          readBackMatches: true,
+          sampleEntityId: "ent-1",
+          errors: [],
+        },
+      ],
+    };
+  }
+
+  /** Boot an app wired to a real GlobalPublishQueue over a stub provider. */
+  async function mkLive(
+    provider: GlobalSampleIndex,
+    mode: "live" | "offline",
+    sampleId = "samples/a",
+  ) {
+    const handle = await openDb();
+    await handle.index.put(analyzedRecord(sampleId));
+    const publishQueue = new GlobalPublishQueue(provider);
+    const app = new SampleMapApp({
+      queue: handle.queue as never,
+      index: handle.index as never,
+      search: { search: vi.fn(async () => []) } as never,
+      preview: new PreviewService(),
+      machiniste: { send: vi.fn(async () => verifiedSend(sampleId)) } as never,
+      createRunner: () => makeFakeRunner(defaultProgress()).runner,
+      fetchPage: async () => ({ samples: [], nextPageToken: "" }),
+      known: { getUpdatedAt: async () => undefined },
+      previewUrlFor: () => undefined,
+      analysisBuild: BUILD,
+      globalPublishQueue: publishQueue,
+      globalPublishDelivery: mode,
+      ep7Consent: grantedEp7Consent(),
+    });
+    app.toggleMultiSelect(analyzedRecord(sampleId));
+    return { app, handle, publishQueue };
+  }
+
+  it("A: live + provider 'stored' -> usage accepted, ONE flush, marker published, nothing pending", async () => {
+    const { provider, calls } = makePublishProvider((batch) => ({
+      items: batch.map(() => ({ status: "stored" as const })),
+      accepted: true,
+    }));
+    const { app, handle, publishQueue } = await mkLive(provider, "live");
+    try {
+      expect(publishQueue.pendingCount).toBe(0);
+      await app.sendToMachiniste("mach-1", 0);
+
+      // Transfer verified.
+      expect(app.machiniste.error).toBeUndefined();
+      expect(app.machiniste.lastResult?.committed).toBe(true);
+
+      // Usage was accepted (usageAcceptedAt stamped).
+      const rec = await handle.index.get("samples/a");
+      expect(rec?.globalPublish?.usageAcceptedAt).toEqual(expect.any(String));
+
+      // EXACTLY ONE flush, carrying all accepted candidates in one batch.
+      expect(calls).toHaveLength(1);
+      expect(calls[0].batch.map((b) => b.sampleId)).toEqual(["samples/a"]);
+
+      // Marker advanced pending -> published.
+      expect(rec?.globalPublish?.delivery).toBe("published");
+
+      // No pending item remains for the just-sent sample.
+      expect(
+        publishQueue.snapshot().filter(
+          (i) => i.sampleId === "samples/a" && i.status === "pending",
+        ),
+      ).toEqual([]);
+      expect(publishQueue.pendingCount).toBe(0);
+    } finally {
+      await handle.db.close();
+    }
+  });
+
+  it("B: live + provider 'already-known' -> marker is 'published' too", async () => {
+    const { provider, calls } = makePublishProvider((batch) => ({
+      items: batch.map(() => ({ status: "already-known" as const })),
+      accepted: true,
+    }));
+    const { app, handle, publishQueue } = await mkLive(provider, "live");
+    try {
+      await app.sendToMachiniste("mach-1", 0);
+      expect(calls).toHaveLength(1);
+      const rec = await handle.index.get("samples/a");
+      expect(rec?.globalPublish?.delivery).toBe("published");
+      expect(publishQueue.pendingCount).toBe(0);
+    } finally {
+      await handle.db.close();
+    }
+  });
+
+  it("C: offline -> NO flush at all, marker stays 'pending'", async () => {
+    const { provider, calls } = makePublishProvider((batch) => ({
+      items: batch.map(() => ({ status: "stored" as const })),
+      accepted: true,
+    }));
+    const { app, handle, publishQueue } = await mkLive(provider, "offline");
+    try {
+      await app.sendToMachiniste("mach-1", 0);
+
+      // The transfer still succeeded and usage is still accepted...
+      expect(app.machiniste.error).toBeUndefined();
+      expect(app.machiniste.lastResult?.committed).toBe(true);
+      const rec = await handle.index.get("samples/a");
+      expect(rec?.globalPublish?.usageAcceptedAt).toEqual(expect.any(String));
+
+      // ...but nothing was delivered: no provider call, marker stays pending.
+      expect(calls).toEqual([]);
+      expect(rec?.globalPublish?.delivery).toBe("pending");
+      expect(publishQueue.pendingCount).toBe(1);
+    } finally {
+      await handle.db.close();
+    }
+  });
+
+  it("D: live + provider rejects -> verified transfer stands, no throw, marker stays 'pending'", async () => {
+    // Terminal provider rejection (the existing conflict classification).
+    const { provider, calls } = makePublishProvider((batch) => ({
+      items: batch.map(() => ({
+        status: "rejected" as const,
+        reason: "conflict: sample is already mapped to a different content identity",
+      })),
+      accepted: false,
+    }));
+    const { app, handle, publishQueue } = await mkLive(provider, "live");
+    try {
+      await expect(app.sendToMachiniste("mach-1", 0)).resolves.toBeUndefined();
+
+      // The verified Machiniste transfer is unaffected by the publish failure.
+      expect(app.machiniste.error).toBeUndefined();
+      expect(app.machiniste.lastResult?.committed).toBe(true);
+      expect(app.machiniste.lastResult?.slots[0].readBackMatches).toBe(true);
+
+      // Existing queue semantics: the item is terminal-failed, and the local
+      // marker is NOT upgraded to "published".
+      expect(calls).toHaveLength(1);
+      const rec = await handle.index.get("samples/a");
+      expect(rec?.globalPublish?.delivery).toBe("pending");
+      const item = publishQueue.snapshot().find((i) => i.sampleId === "samples/a");
+      expect(item?.status).toBe("failed");
+      expect(item?.lastError).toMatch(/conflict/);
+    } finally {
+      await handle.db.close();
+    }
+  });
+
+  it("D2: live + provider THROWS -> verified transfer stands, marker stays 'pending'", async () => {
+    const { provider, calls } = makePublishProvider(() => {
+      throw new Error("worker unreachable");
+    });
+    const { app, handle, publishQueue } = await mkLive(provider, "live");
+    try {
+      await expect(app.sendToMachiniste("mach-1", 0)).resolves.toBeUndefined();
+
+      expect(app.machiniste.error).toBeUndefined();
+      expect(app.machiniste.lastResult?.committed).toBe(true);
+      expect(calls).toHaveLength(1);
+
+      const rec = await handle.index.get("samples/a");
+      expect(rec?.globalPublish?.delivery).toBe("pending");
+      // Transport errors keep the item retryable in the EXISTING retry system.
+      const item = publishQueue.snapshot().find((i) => i.sampleId === "samples/a");
+      expect(item?.status).toBe("retryable");
+      expect(publishQueue.pendingCount).toBe(1);
+    } finally {
+      await handle.db.close();
+    }
+  });
+
+  it("E: many accepted slots still flush EXACTLY ONCE (never per sample)", async () => {
+    const { provider, calls } = makePublishProvider((batch) => ({
+      items: batch.map(() => ({ status: "stored" as const })),
+      accepted: true,
+    }));
+    const handle = await openDb();
+    try {
+      const ids = ["samples/a", "samples/b", "samples/c"];
+      for (const id of ids) await handle.index.put(analyzedRecord(id));
+      const publishQueue = new GlobalPublishQueue(provider);
+      const app = new SampleMapApp({
+        queue: handle.queue as never,
+        index: handle.index as never,
+        search: { search: vi.fn(async () => []) } as never,
+        preview: new PreviewService(),
+        machiniste: {
+          send: vi.fn(async () => ({
+            machinisteId: "mach-1",
+            committed: true,
+            errors: [],
+            slots: ids.map((sampleName, i) => ({
+              slot: i,
+              sampleName,
+              applied: true,
+              readBackMatches: true,
+              sampleEntityId: `ent-${i}`,
+              errors: [],
+            })),
+          })),
+        } as never,
+        createRunner: () => makeFakeRunner(defaultProgress()).runner,
+        fetchPage: async () => ({ samples: [], nextPageToken: "" }),
+        known: { getUpdatedAt: async () => undefined },
+        previewUrlFor: () => undefined,
+        analysisBuild: BUILD,
+        globalPublishQueue: publishQueue,
+        globalPublishDelivery: "live",
+        ep7Consent: grantedEp7Consent(),
+      });
+      for (const id of ids) app.toggleMultiSelect(analyzedRecord(id));
+
+      await app.sendToMachiniste("mach-1", 0);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0].batch.map((b) => b.sampleId).sort()).toEqual([
+        "samples/a",
+        "samples/b",
+        "samples/c",
+      ]);
+      for (const id of ids) {
+        const rec = await handle.index.get(id);
+        expect(rec?.globalPublish?.delivery).toBe("published");
+      }
+      expect(publishQueue.pendingCount).toBe(0);
+    } finally {
+      await handle.db.close();
+    }
+  });
+});

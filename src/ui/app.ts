@@ -17,6 +17,7 @@ import type { SampleMeta } from "@audiotool/nexus/api";
 import type { GlobalSampleIndex, GlobalAnalysisResult } from "../global/contract";
 import type { GlobalMapPoint } from "../global/contract";
 import { mapVersion } from "../map/mapPosition";
+import type { MapRenderInfo } from "./map/mapRender";
 import { mineSampleIds, resolveMapVisibility } from "./map/visibility";
 import type { MapVisibility, SampleMembership, VisibilityToggles } from "./map/visibility";
 import { findSimilar } from "../similarity/similaritySearch";
@@ -393,6 +394,19 @@ export interface CollectionManagerState {
     | undefined;
 }
 
+/**
+ * STEP85 — one entry of the primary project picker.
+ *
+ * Mirrors the existing `LiveProject` shape from the browser session layer; it
+ * is redeclared here so the controller stays free of Audiotool SDK types.
+ */
+export interface ProjectOption {
+  /** Canonical project resource name (the value passed to the open call). */
+  readonly name: string;
+  /** Human-readable name when the backend provides one. */
+  readonly displayName?: string;
+}
+
 export interface SampleMapAppDeps {
   /** Queue used to enqueue scanned sampleIds (persisted metadata only). */
   queue: QueueStore;
@@ -444,6 +458,25 @@ export interface SampleMapAppDeps {
   globalPublishQueue?: GlobalPublishQueue;
   /** STEP16R E-P6 — delivery mode of the provider already wired at bootstrap. */
   globalPublishDelivery?: PublishDeliveryMode;
+  /**
+   * STEP85 — the Audiotool projects offered by the primary project picker.
+   * Purely presentational: the controller renders them and reports the choice.
+   */
+  projects?: readonly ProjectOption[];
+  /**
+   * STEP85 — the project name this app was mounted with. Purely presentational:
+   * it marks the current selection in the picker.
+   */
+  projectName?: string;
+  /**
+   * STEP85 — open a different Audiotool project.
+   *
+   * Owned by the browser bootstrap (it holds the Audiotool client and performs
+   * the real `open()` + re-mount). When omitted the picker stays inert and the
+   * project opened at boot simply remains open — `openFirstProject()` is never
+   * bypassed by the UI.
+   */
+  onSelectProject?: (name: string) => Promise<void>;
   /**
    * STEP19A E-P7 — one-time consent preference store for the first `Add to
    * Machiniste` (FINAL_UI_UX_DESIGN_SPEC §19.5). When omitted the controller
@@ -563,6 +596,122 @@ export class SampleMapApp {
     error: undefined,
     pendingSamples: [],
   };
+
+  // ------------------------------------------------------------------
+  // STEP85 — UI-projection state for the simplified primary flow.
+  //
+  // Purely presentational: these fields carry what the primary header/inspector
+  // need so the user never has to touch a technical id field. They change no
+  // analysis, map, publish or machiniste behaviour.
+  // ------------------------------------------------------------------
+
+  /**
+   * The Machiniste the primary "Add to Machiniste" action targets.
+   *
+   * The advanced panel's technical id input writes into this same field, so
+   * both entry points stay in sync and the action bar never has to read the
+   * DOM.
+   */
+  machinisteTargetId: string = "";
+
+  /** Label of the currently selected Machiniste, for the primary picker. */
+  machinisteTargetName: string = "";
+
+  /**
+   * STEP85 — Machiniste ids used in this session, most recent first.
+   *
+   * The backend exposes no Machiniste directory, so the primary picker offers
+   * exactly what the session already knows instead of inventing a list. An
+   * unknown id can still be typed in the advanced panel.
+   */
+  private machinisteHistory: string[] = [];
+
+  /** The Machiniste targets the primary picker can offer right now. */
+  get knownMachinistes(): readonly string[] {
+    return this.machinisteHistory;
+  }
+
+  /**
+   * STEP85 — what the map actually painted in the last frame, as OBSERVED by
+   * the renderer. Lets the UI state the four numbers separately (analyzed
+   * samples, deduplicated identities, drawn points, clusters) instead of
+   * letting the user guess why the map looks sparse.
+   */
+  mapRendered: MapRenderInfo = {
+    records: 0,
+    localPoints: 0,
+    points: 0,
+    entries: 0,
+    clusters: 0,
+    singles: 0,
+    covered: 0,
+  };
+
+  /**
+   * Record the counts the renderer reported. Deliberately does NOT call
+   * `notify()`: the renderer runs inside a render pass, so re-rendering from
+   * here would recurse. The next render pass picks the values up.
+   */
+  setMapRendered(info: MapRenderInfo): void {
+    this.mapRendered = info;
+  }
+
+  /** Point the primary Machiniste action at a target (picker or advanced input). */
+  setMachinisteTarget(id: string, name?: string): void {
+    const trimmed = id.trim();
+    this.machinisteTargetId = trimmed;
+    this.machinisteTargetName = name ?? trimmed;
+    if (trimmed) {
+      this.machinisteHistory = [
+        trimmed,
+        ...this.machinisteHistory.filter((m) => m !== trimmed),
+      ].slice(0, MAX_BATCH_SLOTS);
+    }
+    this.notify();
+  }
+
+  /**
+   * The Machiniste id the primary action should use: the chosen target, or an
+   * empty string (which surfaces the existing "select a Machiniste" error)
+   * when nothing has been chosen yet.
+   */
+  get machinisteIdForSend(): string {
+    return this.machinisteTargetId.trim();
+  }
+
+  /** STEP85 — the projects offered by the project picker (may be empty). */
+  projects: readonly ProjectOption[] = [];
+
+  /** STEP85 — the project currently open, or undefined before it is known. */
+  projectName: string | undefined;
+
+  /** STEP85 — error from the last project switch attempt, if any. */
+  projectError: string | undefined;
+
+  /**
+   * STEP85 — switch the open Audiotool project.
+   *
+   * The actual open/re-mount is owned by the browser bootstrap (it needs the
+   * Audiotool client and the document); the controller only records the
+   * pending state. Without a handler the picker is inert and the previously
+   * opened project simply stays open.
+   */
+  async selectProject(name: string): Promise<void> {
+    if (!name || name === this.projectName) return;
+    this.projectError = undefined;
+    if (!this.deps.onSelectProject) {
+      this.projectError = "Project switching is not available in this session.";
+      this.notify();
+      return;
+    }
+    try {
+      await this.deps.onSelectProject(name);
+      this.projectName = name;
+    } catch (e) {
+      this.projectError = e instanceof Error ? e.message : String(e);
+    }
+    this.notify();
+  }
 
   results: SearchResult[] = [];
 
@@ -762,6 +911,8 @@ export class SampleMapApp {
   constructor(private readonly deps: SampleMapAppDeps) {
     this.consentStore = deps.ep7Consent ?? createMemoryEp7ConsentStore();
     this.authenticatedUserId = deps.authenticatedUserId;
+    this.projects = deps.projects ?? [];
+    this.projectName = deps.projectName;
   }
 
   /**
@@ -2936,6 +3087,18 @@ if (this.scanAborted) {
     // Re-sync the record registry so the persisted acceptance markers are
     // reflected immediately by the read-only publish-status surface.
     await this.refreshSearch();
+  }
+
+  /**
+   * STEP85 — re-render from a UI-only control that owns no controller state.
+   *
+   * The advanced drawer is pure presentation: opening it must not touch the
+   * analysis, map, search or publish state, but the shell still has to be
+   * rebuilt so the panel is actually mounted. This exposes exactly that and
+   * nothing else.
+   */
+  notifyExternalChange(): void {
+    this.notify();
   }
 
   /** Release all preview resources (e.g. on app teardown). */

@@ -14,6 +14,7 @@ import {
   clusterMapPoints,
   defaultMapCamera,
   entryAt,
+  entryCoverage,
   globalMapPoints,
   mapPoints,
   mergeMapPoints,
@@ -90,6 +91,34 @@ export interface SampleMapRenderOptions {
   onCamera?: (camera: MapCamera) => void;
   /** Overrides the default "No analyzed samples yet." empty-state message. */
   emptyMessage?: string;
+  /**
+   * STEP85 — read-only report of what was actually PAINTED.
+   *
+   * Called after the renderable entries are computed (and also for the empty
+   * map, with zeros). It exists purely so the UI can tell the user apart
+   * between loaded/analyzed samples, deduplicated content identities, rendered
+   * map points and clusters — the four numbers that used to be indistinguishable.
+   * It never influences what is drawn.
+   */
+  onRendered?: (info: MapRenderInfo) => void;
+}
+
+/** STEP85 — the observed counts behind one rendered map frame. */
+export interface MapRenderInfo {
+  /** Records handed to the map (already filtered by Global/My visibility). */
+  readonly records: number;
+  /** Local map points after content-identity dedup (before the global merge). */
+  readonly localPoints: number;
+  /** Points actually drawn-or-counted, after the local/global merge. */
+  readonly points: number;
+  /** Rendered elements: single points + clusters. */
+  readonly entries: number;
+  /** How many of those elements are clusters. */
+  readonly clusters: number;
+  /** How many of those elements are individual sample points. */
+  readonly singles: number;
+  /** Sum of all point + cluster counts — always equal to `points`. */
+  readonly covered: number;
 }
 
 function svgEl(
@@ -154,6 +183,15 @@ export function renderSampleMap(
     empty.setAttribute("data-testid", "map-empty");
     empty.textContent = opts.emptyMessage ?? EMPTY_MAP_MESSAGE;
     container.appendChild(empty);
+    opts.onRendered?.({
+      records: opts.records.length,
+      localPoints: localPoints.length,
+      points: 0,
+      entries: 0,
+      clusters: 0,
+      singles: 0,
+      covered: 0,
+    });
     return;
   }
 
@@ -162,6 +200,18 @@ export function renderSampleMap(
   // overlap are all already decided. Clustering only chooses how many of those
   // very points are painted at this zoom.
   const entries: readonly MapEntry[] = clusterMapPoints(points, camera.zoom);
+
+  // STEP85 — report the observed counts (read-only; changes nothing below).
+  const clusterCount = entries.reduce((n, e) => n + (e.kind === "cluster" ? 1 : 0), 0);
+  opts.onRendered?.({
+    records: opts.records.length,
+    localPoints: localPoints.length,
+    points: points.length,
+    entries: entries.length,
+    clusters: clusterCount,
+    singles: entries.length - clusterCount,
+    covered: entryCoverage(entries),
+  });
 
   const svg = svgEl("svg", {
     class: "sample-map-svg",

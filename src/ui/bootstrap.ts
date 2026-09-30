@@ -239,7 +239,7 @@ export async function buildBrowserDeps(opts: {
   // the URL opts into a larger scan. Never unbounded.
   const scanMaxSamples = readScanMaxSamplesOverride();
 
-  return {
+  const deps: SampleMapAppDeps = {
     queue,
     index,
     search,
@@ -267,6 +267,10 @@ export async function buildBrowserDeps(opts: {
     // STEP38 — stable authenticated account id driving own/foreign eligibility.
     authenticatedUserId,
   };
+  // STEP85 — the project picker wiring is added by `mountAuthenticated` (it
+  // owns the remount, which this factory has no business performing). Both
+  // fields are optional, so a plain `buildBrowserDeps` result stays valid.
+  return deps;
 }
 
 /**

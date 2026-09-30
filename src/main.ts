@@ -1,5 +1,5 @@
 import { audiotool } from "@audiotool/nexus";
-import type { AudiotoolClient } from "@audiotool/nexus";
+import type { AudiotoolClient, SyncedDocument } from "@audiotool/nexus";
 import type { SampleMeta } from "@audiotool/nexus/api";
 import {
   summarizeSample,
@@ -18,7 +18,8 @@ import {
 } from "./global/usageAcceptance";
 import { populatePublishQueue } from "./global/population";
 import { mountAuthenticated } from "./ui/main";
-import { openFirstProject } from "./ui/liveSession";
+import type { SampleMapApp, ProjectOption } from "./ui/app";
+import { listLiveProjects, openLiveProject, pickFirstProject } from "./ui/liveSession";
 
 const CLIENT_ID = (import.meta.env.VITE_AUDIOTOOL_CLIENT_ID as string) || "";
 const SAMPLE_SCOPE = (import.meta.env.VITE_SAMPLE_SCOPE as string) || "project:write";
@@ -177,6 +178,11 @@ async function main() {  const sdk = { _status: "unauthenticated" as string };
  * `mountAuthenticated` triggers `refreshGlobalPoints()` → `queryMapViewport()`
  * and the global pool renders on the map. Absent the URL the read stays
  * unwired (offline map behavior unchanged).
+ *
+ * STEP85 — the project list is fetched with the same API and page size, so the
+ * header picker shows the real projects. `openFirstProject` semantics are
+ * preserved: when the list is unusable the app still opens the first project it
+ * can find, and never blocks the mount.
  */
 async function mountLiveSampleMap(
   at: AudiotoolClient,
@@ -184,21 +190,62 @@ async function mountLiveSampleMap(
   publishQueue?: GlobalPublishQueue,
   publishProvider?: GlobalSampleIndex,
 ) {
-  const doc = await openFirstProject(at);
+  const projects = await listLiveProjects(at);
+  const first = pickFirstProject(projects);
+  if (!first) {
+    throw new Error("no usable project to open for SampleMap");
+  }
+
+  // The picker needs a project to switch away FROM as well, otherwise the
+  // current selection would be missing from its own option list.
+  const options: ProjectOption[] = projects.map((p) => ({
+    name: p.name,
+    displayName: p.displayName,
+  }));
+
+  // The live app instance, so a project switch can stop indexing and dispose it
+  // before remounting. Declared here (not per-mount) so the closure below and
+  // the picker always refer to the same current app.
+  let current: SampleMapApp | undefined;
+
+  const mount = async (doc: SyncedDocument, projectName: string) => {
+    current = await mountAuthenticated(root, {
+      client: at,
+      doc,
+      authenticatedUserName: (at as { userName?: string }).userName,
+      globalPublishQueue: publishQueue,
+      globalPublishDelivery: GLOBAL_WORKER_URL ? "live" : "offline",
+      // STEP58 — reuse the SAME provider as `globalIndex` (publish + read share
+      // one instance when a live Worker URL is configured; otherwise unset).
+      globalIndex: readProviderFor(publishProvider, Boolean(GLOBAL_WORKER_URL)),
+      projects: options,
+      projectName,
+      onSelectProject: async (name: string) => {
+        if (name === projectName) return;
+        // STEP85 — a project switch is a real session change: stop the running
+        // indexing, release the preview/DOM resources, then open + remount.
+        const previous = current;
+        current = undefined;
+        try {
+          previous?.stopScan();
+        } catch {
+          // A failing stop must never prevent the switch; the scan is being
+          // abandoned either way.
+        }
+        previous?.dispose();
+        const nextDoc = await openLiveProject(at, name);
+        if (!nextDoc) throw new Error(`project "${name}" could not be opened`);
+        await mount(nextDoc, name);
+      },
+    });
+  };
+
+  const doc = await openLiveProject(at, first.name);
   if (!doc) {
     throw new Error("no usable project to open for SampleMap");
   }
   log("info", `SampleMap: opened project doc, mounting UI`);
-  await mountAuthenticated(root, {
-    client: at,
-    doc,
-    authenticatedUserName: (at as { userName?: string }).userName,
-    globalPublishQueue: publishQueue,
-    globalPublishDelivery: GLOBAL_WORKER_URL ? "live" : "offline",
-    // STEP58 — reuse the SAME provider as `globalIndex` (publish + read share
-    // one instance when a live Worker URL is configured; otherwise unset).
-    globalIndex: readProviderFor(publishProvider, Boolean(GLOBAL_WORKER_URL)),
-  });
+  await mount(doc, first.name);
 }
 
 async function runSamplePoc(

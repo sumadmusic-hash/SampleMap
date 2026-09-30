@@ -29,6 +29,40 @@ export function pickFirstProject(
 }
 
 /**
+ * List the user's projects for the STEP85 project picker.
+ *
+ * Reuses the exact same API and page size as `openFirstProject`; the only
+ * difference is that the result is returned instead of immediately opened.
+ * A non-Error, empty or malformed response yields an empty list so the UI can
+ * fall back to showing the currently open project only.
+ */
+export async function listLiveProjects(
+  client: AudiotoolClient,
+  pageSize = 5,
+): Promise<LiveProject[]> {
+  const res = await client.projects.listProjects({ pageSize });
+  if (res instanceof Error || !res.projects) return [];
+  return res.projects.filter((p) => typeof p?.name === "string" && p.name.length > 0);
+}
+
+/**
+ * Open one specific project by name and start its document.
+ *
+ * This is the STEP85 counterpart of `openFirstProject`: the picker needs to
+ * open an explicitly chosen project, and both paths must behave identically
+ * (throw on API error, `undefined` when no usable project exists).
+ */
+export async function openLiveProject(
+  client: AudiotoolClient,
+  name: string,
+): Promise<SyncedDocument | undefined> {
+  if (name.length === 0) return undefined;
+  const doc = await client.open(name);
+  await doc.start();
+  return doc;
+}
+
+/**
  * List the user's projects (reusing the existing project API), pick the first
  * usable one, open it and start its document. Returns `undefined` when there is
  * no usable project.
@@ -37,14 +71,8 @@ export async function openFirstProject(
   client: AudiotoolClient,
   pageSize = 5,
 ): Promise<SyncedDocument | undefined> {
-  const res = await client.projects.listProjects({ pageSize });
-  if (res instanceof Error) throw res;
-  if (!res.projects || res.projects.length === 0) return undefined;
-
-  const project = pickFirstProject(res.projects);
+  const projects = await listLiveProjects(client, pageSize);
+  const project = pickFirstProject(projects);
   if (!project) return undefined;
-
-  const doc = await client.open(project.name);
-  await doc.start();
-  return doc;
+  return openLiveProject(client, project.name);
 }

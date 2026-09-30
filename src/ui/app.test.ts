@@ -2435,3 +2435,194 @@ describe("SampleMap UI : STEP83 live publish after verified Machiniste send", ()
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// STEP85 — the primary-flow controller state.
+//
+// The UI refactor is presentation only, so these tests pin the three pieces of
+// NEW controller state it relies on: the observed map counts, the Machiniste
+// target used by the primary action, and the project picker.
+// ---------------------------------------------------------------------------
+
+describe("SampleMap UI : STEP85 primary-flow state", () => {
+  it("mapRendered starts empty and records exactly what the renderer reported", async () => {
+    const { app, db } = await mk();
+    try {
+      // Before the first render the UI must not claim any samples.
+      expect(app.mapRendered.points).toBe(0);
+      expect(app.mapRendered.clusters).toBe(0);
+
+      app.setMapRendered({
+        records: 437,
+        localPoints: 353,
+        points: 353,
+        entries: 97,
+        clusters: 85,
+        singles: 12,
+        covered: 341,
+      });
+      expect(app.mapRendered).toEqual({
+        records: 437,
+        localPoints: 353,
+        points: 353,
+        entries: 97,
+        clusters: 85,
+        singles: 12,
+        covered: 341,
+      });
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("setMapRendered never triggers a re-render (it runs inside a render pass)", async () => {
+    let renders = 0;
+    const { app, db } = await mk({
+      onChange: () => {
+        renders += 1;
+      },
+    });
+    try {
+      app.setMapRendered({
+        records: 10,
+        localPoints: 8,
+        points: 8,
+        entries: 8,
+        clusters: 0,
+        singles: 8,
+        covered: 0,
+      });
+      // A notify() here would recurse forever inside renderApp.
+      expect(renders).toBe(0);
+      expect(app.mapRendered.points).toBe(8);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("the primary Machiniste action uses the picked target", async () => {
+    const { app, db } = await mk();
+    try {
+      // Nothing picked yet: the existing "select a Machiniste" guard applies.
+      expect(app.machinisteIdForSend).toBe("");
+
+      app.setMachinisteTarget("kick-machine");
+      expect(app.machinisteIdForSend).toBe("kick-machine");
+      expect(app.machinisteTargetName).toBe("kick-machine");
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("the Machiniste picker offers previously used targets, most recent first, without duplicates", async () => {
+    const { app, db } = await mk();
+    try {
+      expect(app.knownMachinistes).toEqual([]);
+      app.setMachinisteTarget("machine-a");
+      app.setMachinisteTarget("machine-b");
+      app.setMachinisteTarget("machine-a");
+      // Re-picking A promotes it again instead of duplicating it.
+      expect([...app.knownMachinistes]).toEqual(["machine-a", "machine-b"]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("a blank Machiniste choice never enters the picker history", async () => {
+    const { app, db } = await mk();
+    try {
+      app.setMachinisteTarget("machine-a");
+      app.setMachinisteTarget("   ");
+      expect(app.machinisteIdForSend).toBe("");
+      expect([...app.knownMachinistes]).toEqual(["machine-a"]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("the project picker starts on the project the app was mounted with", async () => {
+    const { app, db } = await mk({
+      projects: [
+        { name: "proj-1", displayName: "One" },
+        { name: "proj-2", displayName: "Two" },
+      ],
+      projectName: "proj-2",
+    });
+    try {
+      expect(app.projects).toHaveLength(2);
+      expect(app.projectName).toBe("proj-2");
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("selectProject delegates to the bootstrap and records the new project", async () => {
+    const opened: string[] = [];
+    const { app, db } = await mk({
+      projects: [{ name: "proj-1" }, { name: "proj-2" }],
+      projectName: "proj-1",
+      onSelectProject: async (name: string) => {
+        opened.push(name);
+      },
+    });
+    try {
+      await app.selectProject("proj-2");
+      expect(opened).toEqual(["proj-2"]);
+      expect(app.projectName).toBe("proj-2");
+      expect(app.projectError).toBeUndefined();
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("selectProject is a no-op for the already open project and for an empty name", async () => {
+    const opened: string[] = [];
+    const { app, db } = await mk({
+      projects: [{ name: "proj-1" }],
+      projectName: "proj-1",
+      onSelectProject: async (name: string) => {
+        opened.push(name);
+      },
+    });
+    try {
+      await app.selectProject("proj-1");
+      await app.selectProject("");
+      // Re-opening the current project would tear down a healthy session for
+      // nothing, so neither case may reach the bootstrap.
+      expect(opened).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("selectProject surfaces a switch failure and keeps the previous project", async () => {
+    const { app, db } = await mk({
+      projects: [{ name: "proj-1" }, { name: "proj-2" }],
+      projectName: "proj-1",
+      onSelectProject: async () => {
+        throw new Error("project could not be opened");
+      },
+    });
+    try {
+      await app.selectProject("proj-2");
+      expect(app.projectError).toBe("project could not be opened");
+      expect(app.projectName).toBe("proj-1");
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("selectProject without a bootstrap handler reports it instead of failing silently", async () => {
+    const { app, db } = await mk({
+      projects: [{ name: "proj-1" }, { name: "proj-2" }],
+      projectName: "proj-1",
+    });
+    try {
+      await app.selectProject("proj-2");
+      expect(app.projectError).toBe("Project switching is not available in this session.");
+      expect(app.projectName).toBe("proj-1");
+    } finally {
+      await db.close();
+    }
+  });
+});

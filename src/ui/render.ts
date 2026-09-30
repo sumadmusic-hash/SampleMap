@@ -256,14 +256,19 @@ export function renderApp(root: HTMLElement, app: SampleMapApp): void {
         inspector: prevShell.classList.contains("inspector-open"),
       }
     : { filter: false, inspector: false };
+  // STEP85: the advanced drawer is UI-only state that lives on the shell, so
+  // it has to survive the rebuild for the same reason the drawers do — the
+  // panels inside it hold their own controls (scan, filters, send form).
+  const advancedOpen = prevShell?.getAttribute("data-advanced-open") === "true";
 
   root.textContent = "";
 
   const shell = el("div", "app-shell");
   if (prevDrawerFlags.filter) shell.classList.add("filter-open");
   if (prevDrawerFlags.inspector) shell.classList.add("inspector-open");
-  shell.appendChild(renderHeader(app, root));
-  shell.appendChild(renderContent(app));
+  if (advancedOpen) shell.setAttribute("data-advanced-open", "true");
+  shell.appendChild(renderHeader(app, root, advancedOpen));
+  shell.appendChild(renderContent(app, advancedOpen));
   shell.appendChild(renderActionBar(app, root));
   shell.appendChild(
     el("div", "mobile-notice", "SampleMap requires a desktop browser."),
@@ -367,67 +372,259 @@ function isCaretInputType(type: string): boolean {
 }
 
 /** The three layout regions of the shell (§6). */
-function renderContent(app: SampleMapApp): HTMLElement {
+/**
+ * STEP85 — the primary content area: the MAP, plus a compact sample detail
+ * panel. Nothing else competes for the screen.
+ *
+ * Everything that is not part of the primary user flow lives in the advanced
+ * drawer (`renderAdvancedArea`) and is CLOSED by default. Nothing was removed:
+ * the scan/analysis controls, technical filters, discovery, sound space,
+ * collections, similarity, results, the technical send form and the detailed
+ * inspector data are all still mounted there.
+ */
+function renderContent(app: SampleMapApp, advancedOpen: boolean): HTMLElement {
   const content = el("div", "app-content");
 
-  // Left rail: indexing controls + filters.
-  const filter = el("aside", "filter-panel");
-  filter.setAttribute("aria-label", "Filters");
-  filter.appendChild(renderScanPanel(app));
-  filter.appendChild(renderAnalysisPanel(app));
-  filter.appendChild(renderFiltersPanel(app));
-  content.appendChild(filter);
-
-  // Center: the map is the dominant surface; the result list is the
-  // integrated secondary surface (spec §6 — never a fourth column).
+  // ── Primary: the map is the product ──────────────────────────────────────
   const mapRegion = el("main", "map-region");
   mapRegion.appendChild(renderMapPanel(app));
-  mapRegion.appendChild(renderDiscoveryPanel(app));
-  mapRegion.appendChild(renderSoundSpacePanel(app));
-  // Progressive disclosure: collection panel revealed after collection manager used
-  if (app.progressiveDisclosure.collectionManagerUsed) {
-    mapRegion.appendChild(renderCollectionPanel(app));
-    mapRegion.appendChild(renderCollectionManagerPanel(app));
-  }
-  mapRegion.appendChild(renderResultsPanel(app));
   content.appendChild(mapRegion);
 
-  // Right rail: inspector (focused sample) + find-similar + send.
-  // Progressive disclosure: reveal after surfaces used
+  // ── Primary: the compact inspector for the focused sample ────────────────
   const inspectorRegion = el("aside", "inspector-region");
-  inspectorRegion.setAttribute("aria-label", "Inspector");
-  inspectorRegion.appendChild(renderDetailPanel(app));
-  // Progressive disclosure: similar panel after discovery or similarity used
-  if (app.progressiveDisclosure.discoveryUsed || app.progressiveDisclosure.similarityV2Used) {
-    inspectorRegion.appendChild(renderSimilarPanel(app));
-    inspectorRegion.appendChild(renderSimilarityV2Panel(app));
-  }
-  inspectorRegion.appendChild(renderSendPanel(app));
+  inspectorRegion.setAttribute("aria-label", "Sample");
+  const parts = renderInspectorParts(app);
+  inspectorRegion.appendChild(parts.primary);
   content.appendChild(inspectorRegion);
+
+  // ── Secondary: everything else, collapsed by default ─────────────────────
+  content.appendChild(renderAdvancedArea(app, parts.technical, advancedOpen));
 
   return content;
 }
 
 /**
- * Persistent top-level header (§6 / §12): brand + index status, the GLOBAL
- * search bar (the query applies across the whole sample set), and reserved
- * right-side actions (Refresh index, drawer toggles for the responsive shell).
+ * STEP85 — the advanced surface, folded away by default.
+ *
+ * Rendered as a real `<details>` so it is keyboard accessible and works without
+ * JavaScript state, and so the panels inside keep their existing markup and
+ * behaviour verbatim.
  */
-function renderHeader(app: SampleMapApp, root: HTMLElement): HTMLElement {
+function renderAdvancedArea(
+  app: SampleMapApp,
+  inspectorTechnical: readonly HTMLElement[],
+  advancedOpen: boolean,
+): HTMLElement {
+  const details = document.createElement("details");
+  details.className = "advanced-area";
+  details.setAttribute("data-testid", "advanced-area");
+  if (advancedOpen) details.open = true;
+
+  const summary = document.createElement("summary");
+  summary.className = "advanced-summary";
+  summary.setAttribute("data-testid", "advanced-summary");
+  summary.textContent = "Advanced — indexing, filters, discovery, collections, publish details";
+  details.appendChild(summary);
+
+  const body = el("div", "advanced-body");
+
+  const grid = el("div", "advanced-grid");
+
+  // Left rail: indexing controls + technical filters.
+  const filter = el("aside", "filter-panel");
+  filter.setAttribute("aria-label", "Indexing and filters");
+  filter.appendChild(renderScanPanel(app));
+  filter.appendChild(renderAnalysisPanel(app));
+  filter.appendChild(renderFiltersPanel(app));
+  grid.appendChild(filter);
+
+  // Center: discovery, sound space, collections, result list.
+  const extra = el("div", "advanced-center");
+  extra.appendChild(renderDiscoveryPanel(app));
+  extra.appendChild(renderSoundSpacePanel(app));
+  if (app.progressiveDisclosure.collectionManagerUsed) {
+    extra.appendChild(renderCollectionPanel(app));
+    extra.appendChild(renderCollectionManagerPanel(app));
+  }
+  extra.appendChild(renderResultsPanel(app));
+  grid.appendChild(extra);
+
+  // Right rail: the detailed inspector data + the technical send form.
+  const detail = el("aside", "advanced-inspector");
+  detail.setAttribute("aria-label", "Details");
+  const detailWrap = section("Sample details");
+  detailWrap.append(...inspectorTechnical);
+  detail.appendChild(detailWrap);
+  if (app.progressiveDisclosure.discoveryUsed || app.progressiveDisclosure.similarityV2Used) {
+    detail.appendChild(renderSimilarPanel(app));
+    detail.appendChild(renderSimilarityV2Panel(app));
+  }
+  detail.appendChild(renderSendPanel(app));
+  grid.appendChild(detail);
+
+  body.appendChild(grid);
+  details.appendChild(body);
+  return details;
+}
+
+
+/**
+ * STEP85 — one Global / My Samples visibility toggle.
+ *
+ * Promoted to the primary header: these two switches decide what the map shows
+ * and belong to the primary flow, not to the technical filter rail. The
+ * underlying `resolveMapVisibility` projection is unchanged.
+ */
+function renderVisibilityToggle(
+  testid: string,
+  labelText: string,
+  isOn: boolean,
+  count: number,
+  title: string,
+  onToggle: () => void,
+): HTMLElement {
+  const btn = button(testid, `${labelText} (${count})`);
+  btn.setAttribute("data-testid", testid);
+  btn.setAttribute("aria-pressed", isOn ? "true" : "false");
+  btn.setAttribute("data-active", isOn ? "true" : "false");
+  btn.title = title;
+  if (isOn) btn.classList.add("is-active");
+  btn.onclick = onToggle;
+  return btn;
+}
+
+/** STEP85 — the header row carrying Global and My Samples. */
+function renderHeaderVisibility(app: SampleMapApp): HTMLElement {
+  const wrap = el("div", "header-visibility");
+  wrap.setAttribute("aria-label", "Map visibility");
+
+  wrap.appendChild(
+    renderVisibilityToggle(
+      "filter-global",
+      "Global",
+      app.visibility.global,
+      app.globalPoints.length,
+      "Show the existing global sample set on the map",
+      () => void app.setVisibility({ global: !app.visibility.global }),
+    ),
+  );
+
+  // The count is the COMPLETE known sample set of the authenticated user (any
+  // analysis status) — not only what is currently analyzed or on the map.
+  const mine = renderVisibilityToggle(
+    "filter-my-samples",
+    "My Samples",
+    app.visibility.mine,
+    app.mySamples.size,
+    app.hasAuthenticatedIdentity
+      ? "Show the samples owned by the authenticated user"
+      : "Authenticated user unknown — ownership cannot be determined",
+    () => void app.setVisibility({ mine: !app.visibility.mine }),
+  );
+  if (!app.hasAuthenticatedIdentity) {
+    mine.setAttribute("data-identity-unavailable", "true");
+  }
+  wrap.appendChild(mine);
+  return wrap;
+}
+
+/**
+ * STEP85 — the Audiotool project picker.
+ *
+ * Replaces the hidden "the app silently opened my first project" behaviour with
+ * a visible, honest control. When the bootstrap supplied no project list the
+ * control still shows which project is open, so the user is never guessing.
+ */
+function renderProjectPicker(app: SampleMapApp): HTMLElement {
+  const wrap = el("div", "header-project");
+
+  const label = el("label", "header-project-label", "Project:");
+  const select = document.createElement("select");
+  select.className = "header-project-select";
+  select.setAttribute("data-testid", "project-select");
+  select.setAttribute("aria-label", "Project");
+
+  const options = app.projects.length > 0 ? app.projects : [];
+  if (options.length === 0) {
+    // No list available: show the open project as the only, fixed entry so the
+    // control stays truthful instead of pretending a choice exists.
+    const only = document.createElement("option");
+    only.value = app.projectName ?? "";
+    only.textContent = app.projectName ?? "Project";
+    only.selected = true;
+    select.appendChild(only);
+    select.disabled = true;
+  } else {
+    for (const p of options) {
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = p.displayName || p.name;
+      opt.selected = p.name === app.projectName;
+      select.appendChild(opt);
+    }
+    // Never let the select sit on a project that is not open.
+    if (app.projectName && !options.some((p) => p.name === app.projectName)) {
+      const current = document.createElement("option");
+      current.value = app.projectName;
+      current.textContent = app.projectName;
+      current.selected = true;
+      select.insertBefore(current, select.firstChild);
+    }
+    select.onchange = () => void app.selectProject(select.value);
+  }
+  wrap.append(label, select);
+
+  if (app.projectError) {
+    const err = el("div", "header-project-error", app.projectError);
+    err.setAttribute("data-testid", "project-error");
+    wrap.appendChild(err);
+  }
+  return wrap;
+}
+
+/**
+ * STEP85 — the plain-language index status.
+ *
+ * The product indexes and analyses the library AUTOMATICALLY in the background,
+ * so the primary line reports progress instead of inviting the user to press
+ * "Analyse N". While a run is active it reads "Indexing samples… N analyzed",
+ * otherwise "N samples".
+ */
+function indexStatusText(app: SampleMapApp): string {
+  const analyzed = app.analysis.analyzed;
+  const running =
+    app.analysis.status === "running" ||
+    app.analysis.status === "paused" ||
+    app.scan.status === "scanning";
+  if (running) return `Indexing samples… ${analyzed} analyzed`;
+  if (analyzed > 0) return `${analyzed} samples`;
+  return "Indexing samples…";
+}
+
+
+/**
+ * Persistent top-level header: brand + plain index status, the GLOBAL search
+ * bar, the project picker, the two visibility toggles, and the right-side
+ * actions (Advanced drawer, Refresh index, responsive drawer toggles).
+ *
+ * STEP85: the header is the whole primary navigation. No pipeline controls.
+ */
+function renderHeader(
+  app: SampleMapApp,
+  root: HTMLElement,
+  advancedOpen: boolean,
+): HTMLElement {
   const header = el("header", "app-header");
 
   const brand = el("div", "header-brand");
   const title = el("h1", "ui-title", "SAMPLEMAP");
   const dot = el("span", "header-dot");
   dot.setAttribute("aria-hidden", "true");
-  const indexStatus = el(
-    "div",
-    "header-index-status",
-    `Local index · ${app.analysis.analyzed} analyzed`,
-  );
+  const indexStatus = el("div", "header-index-status", indexStatusText(app));
+  indexStatus.setAttribute("data-testid", "header-index-status");
   brand.append(title, dot, indexStatus);
 
-  // Global search (spec §12): header, ~320px flexible, no autofocus on load.
+  // Global search: the query applies across the whole sample set.
   const searchWrap = el("div", "header-search");
   const search = el("input") as HTMLInputElement;
   search.type = "text";
@@ -445,6 +642,25 @@ function renderHeader(app: SampleMapApp, root: HTMLElement): HTMLElement {
   searchWrap.append(search, clear);
 
   const actions = el("div", "header-actions");
+
+  // STEP85 — the single door to everything that is not the primary flow.
+  const advanced = button("header-advanced-btn", advancedOpen ? "Hide advanced" : "Advanced");
+  advanced.setAttribute("data-testid", "header-advanced");
+  advanced.setAttribute("aria-expanded", advancedOpen ? "true" : "false");
+  advanced.setAttribute("data-open", advancedOpen ? "true" : "false");
+  advanced.title =
+    "Indexing controls, technical filters, discovery, sound space, collections and publish details";
+  advanced.onclick = () => {
+    const shell = root.querySelector<HTMLElement>(".app-shell");
+    if (!shell) return;
+    const next = shell.getAttribute("data-advanced-open") !== "true";
+    shell.setAttribute("data-advanced-open", next ? "true" : "false");
+    // Re-render through the controller so every dependent surface stays in sync.
+    app.notifyExternalChange();
+  };
+  if (advancedOpen) advanced.classList.add("is-active");
+  actions.appendChild(advanced);
+
   const refresh = button("action-btn", "Refresh index");
   refresh.setAttribute("data-testid", "header-refresh");
   refresh.onclick = () => {
@@ -452,7 +668,7 @@ function renderHeader(app: SampleMapApp, root: HTMLElement): HTMLElement {
     app.refreshGlobalPointsImmediate();
   };
 
-  // Responsive drawer toggles (§27) — only visible below 1024px (CSS).
+  // Responsive drawer toggles — only visible below 1024px (CSS).
   const menu = button("header-menu", "☰");
   menu.setAttribute("data-testid", "header-menu");
   menu.setAttribute("aria-label", "Toggle filters");
@@ -464,7 +680,7 @@ function renderHeader(app: SampleMapApp, root: HTMLElement): HTMLElement {
   inspToggle.onclick = () => toggleShellClass(root, "inspector-open");
 
   actions.append(refresh, menu, inspToggle);
-  header.append(brand, searchWrap, actions);
+  header.append(brand, searchWrap, renderProjectPicker(app), renderHeaderVisibility(app), actions);
   return header;
 }
 
@@ -481,6 +697,14 @@ function toggleShellClass(
 /**
  * Bottom action bar (§18): persistent selection state + the single primary
  * action. Keys off the BATCH SELECTION, never off focus.
+ */
+/**
+ * Bottom action bar: the single primary action of the whole product.
+ *
+ * STEP85: the primary flow is "pick samples -> Add to Machiniste". The
+ * Machiniste is chosen through a readable picker instead of a raw id field; the
+ * technical id/slot inputs stay available in the advanced area and write into
+ * the very same controller state.
  */
 function renderActionBar(app: SampleMapApp, root: HTMLElement): HTMLElement {
   const bar = el("footer", "action-bar");
@@ -501,6 +725,45 @@ function renderActionBar(app: SampleMapApp, root: HTMLElement): HTMLElement {
   pill.title = selectionCountLabel(n);
   pill.setAttribute("aria-label", selectionCountLabel(n));
 
+  // ── Machiniste picker (readable, no raw id entry) ────────────────────────
+  const picker = el("div", "machiniste-picker");
+  const pickerLabel = el("label", "machiniste-picker-label", "Machiniste");
+  const pickerId = "machiniste-picker-select";
+  const select = document.createElement("select");
+  select.className = "machiniste-picker-select";
+  select.id = pickerId;
+  select.setAttribute("data-testid", "machiniste-select");
+  select.setAttribute("aria-label", "Machiniste auswählen");
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Machiniste auswählen…";
+  placeholder.selected = app.machinisteTargetId === "";
+  select.appendChild(placeholder);
+
+  // The known targets are the ones this session already used, so the picker
+  // never has to invent a directory that the backend does not expose.
+  for (const known of app.knownMachinistes) {
+    const opt = document.createElement("option");
+    opt.value = known;
+    opt.textContent = known;
+    opt.selected = known === app.machinisteTargetId;
+    select.appendChild(opt);
+  }
+  if (app.machinisteTargetId && !app.knownMachinistes.includes(app.machinisteTargetId)) {
+    const current = document.createElement("option");
+    current.value = app.machinisteTargetId;
+    current.textContent = app.machinisteTargetId;
+    current.selected = true;
+    select.appendChild(current);
+  }
+  select.onchange = () => {
+    if (select.value) app.setMachinisteTarget(select.value, select.value);
+  };
+  pickerLabel.setAttribute("for", pickerId);
+  picker.append(pickerLabel, select);
+  sel.appendChild(picker);
+
   const add = button("action-add-btn", "Add to Machiniste");
   add.setAttribute("data-testid", "machiniste-add");
   add.disabled = n === 0;
@@ -508,16 +771,18 @@ function renderActionBar(app: SampleMapApp, root: HTMLElement): HTMLElement {
     add.title = "Select at least one sample to add to Machiniste";
   }
   add.onclick = () => {
+    // The chosen target wins; the advanced technical inputs are the fallback
+    // so an explicitly typed id is never ignored.
     const idInput = root.querySelector<HTMLInputElement>(
       "[data-testid='machiniste-id']",
     );
     const slotInput = root.querySelector<HTMLInputElement>(
       "[data-testid='machiniste-slot-start']",
     );
-    void app.sendToMachiniste(
-      idInput?.value.trim() ?? "",
-      Number(slotInput?.value) || 0,
-    );
+    const typed = idInput?.value.trim() ?? "";
+    const target = app.machinisteIdForSend || typed;
+    if (typed && typed !== app.machinisteIdForSend) app.setMachinisteTarget(typed, typed);
+    void app.sendToMachiniste(target, Number(slotInput?.value) || 0);
   };
 
   sel.append(pill, add);
@@ -743,65 +1008,10 @@ function renderFiltersPanel(app: SampleMapApp): HTMLElement {
   sortField.appendChild(sortSel);
   filters.appendChild(sortField);
 
-  // ── Global / My Samples: two INDEPENDENT visibility toggles ────────────────
-  // One shared 2D sound space; the visible set is the UNION of the enabled
-  // modes. Toggling either never touches the other, and never changes the
-  // searchable result set (a sample stays findable while off the map).
-  const visRow = el("div", "filter-row visibility-row");
-  const makeToggle = (
-    testid: string,
-    labelText: string,
-    isOn: boolean,
-    count: number,
-    title: string,
-    onToggle: () => void,
-  ): HTMLElement => {
-    const field = el("div", "filter-field");
-    const btn = button(testid, `${labelText} (${count})`);
-    btn.setAttribute("data-testid", testid);
-    btn.setAttribute("aria-pressed", isOn ? "true" : "false");
-    btn.setAttribute("data-active", isOn ? "true" : "false");
-    btn.title = title;
-    if (isOn) btn.classList.add("is-active");
-    btn.onclick = onToggle;
-    field.appendChild(btn);
-    return field;
-  };
-
-  const vis = app.visibility;
-  const visField = el("div", "filter-field");
-  const visLabel = el("label", "filter-label", "Visibility");
-  visField.appendChild(visLabel);
-  visField.appendChild(
-    makeToggle(
-      "filter-global",
-      "Global",
-      vis.global,
-      app.globalPoints.length,
-      "Show the existing global sample set on the map",
-      () => void app.setVisibility({ global: !app.visibility.global }),
-    ),
-  );
-  // The count is the COMPLETE known sample set of the authenticated user (any
-  // analysis status) — not only what is currently analyzed or on the map.
-  const mineField = makeToggle(
-    "filter-my-samples",
-    "My Samples",
-    vis.mine,
-    app.mySamples.size,
-    app.hasAuthenticatedIdentity
-      ? "Show the samples owned by the authenticated user"
-      : "Authenticated user unknown — ownership cannot be determined",
-    () => void app.setVisibility({ mine: !app.visibility.mine }),
-  );
-  if (!app.hasAuthenticatedIdentity) {
-    mineField.querySelector("button")?.setAttribute("data-identity-unavailable", "true");
-  }
-  visField.appendChild(mineField);
-  visRow.appendChild(visField);
-  filters.appendChild(visRow);
-
-  // Active-filter summary line (E-P4.2) — hidden when nothing is filtered.
+  // ── Global / My Samples: the two INDEPENDENT visibility toggles ────────────
+  // STEP85: these moved to the header (they are a primary-view control, not a
+  // technical filter). The active-filter summary and the technical sort/confidence
+  // controls stay here in the advanced surface.
   const summary = activeFilterSummary(st);
   if (summary) {
     const line = el("div", "active-filter-summary", summary);
@@ -826,9 +1036,28 @@ function renderFiltersPanel(app: SampleMapApp): HTMLElement {
   return wrap;
 }
 
-/** The 2D SampleMap panel: one point per analyzed record + camera (Step 15F). */
+/**
+ * STEP85 — the honest map count line.
+ *
+ * Answers the question the old UI left open: "why do I see so few dots?". The
+ * four numbers are the pipeline's real stages and are reported separately:
+ * loaded/analyzed samples, deduplicated content identities, the points actually
+ * drawn, and how many of those are clusters.
+ */
+function mapCountText(app: SampleMapApp): string {
+  const m = app.mapRendered;
+  if (m.points === 0) return "No samples on the map";
+  const parts = [`${m.points} samples on the map`];
+  if (m.clusters > 0) {
+    parts.push(`${m.clusters} clusters showing ${m.covered} samples`);
+    parts.push(`${m.singles} individual`);
+  }
+  return parts.join(" · ");
+}
+
 function renderMapPanel(app: SampleMapApp): HTMLElement {
   const wrap = section(`Sample Map (${MAP_VERSION})`);
+  wrap.classList.add("map-panel-primary");
 
   // Zoom controls (Step 15F §20): [−] [label] [+] [Reset].
   const controls = el("div", "map-zoom-controls");
@@ -870,14 +1099,23 @@ function renderMapPanel(app: SampleMapApp): HTMLElement {
       app.setMapCamera(camera);
     },
     emptyMessage: visibilityEmptyMessage(app, visibleRecords.length),
+    // STEP85: the count line is derived from the very numbers the renderer
+    // produced, so it can never disagree with what is on screen.
+    onRendered: (info) => app.setMapRendered(info),
   });
+
+  // STEP85: the count line is appended AFTER the map render, so it is built
+  // from the already-known pipeline numbers instead of the previous frame.
+  const count = el("div", "map-count-line", mapCountText(app));
+  count.setAttribute("data-testid", "map-count-line");
+  count.setAttribute("aria-live", "polite");
 
   // Step 16L: global-map state line (idle/loading/ok/empty/error). It never
   // implies the whole map is empty — local points are rendered regardless.
   const globalState = el("div", `map-global-state map-global-state-${app.globalMapState}`);
   globalState.setAttribute("data-testid", "map-global-state");
   globalState.textContent = globalMapStateLabel(app.globalMapState);
-  wrap.append(controls, globalState, host);
+  wrap.append(controls, globalState, host, count);
 
   // First-use empty-state overlay (spec §25): indexed nothing yet, no active
   // filter, scan never started. One primary action: start indexing.
@@ -2142,34 +2380,98 @@ const close = button("similarity-v2-close", "Close");
   return wrap;
 }
 
-function renderDetailPanel(app: SampleMapApp): HTMLElement {
-  const wrap = section("Inspector");
+/**
+ * STEP85 — the sample detail surface, split in two.
+ *
+ * `primary` is what a normal user needs to identify, audition and pick a
+ * sample: name, class, owner, preview and the batch-selection toggle. It is the
+ * only part mounted in the primary view.
+ *
+ * `technical` carries everything that used to crowd the same panel — confidence
+ * details, secondary classes, tags, duration, map position, BPM, community
+ * counters, the global-publish status and Find Similar. It is mounted in the
+ * advanced drawer. The data and the computed view-model are unchanged; only the
+ * placement differs.
+ */
+function renderInspectorParts(app: SampleMapApp): {
+  primary: HTMLElement;
+  technical: HTMLElement[];
+} {
+  const primary = section("Sample");
+  primary.classList.add("inspector-primary");
 
-  // Step 16L Phase 2: Global Inspection — a global-only point selected for
-  // inspection (no local record yet). Renders the canonical global analysis
-  // directly, WITHOUT running the analysis pipeline.
+  // Step 16L Phase 2: a global-only point selected for inspection (no local
+  // record yet). The compact panel shows what is knowable without a local
+  // record; the full global analysis stays in the advanced area.
   if (!app.focusedSampleId && app.globalInspection) {
-    renderGlobalInspection(wrap, app);
-    return wrap;
+    const g = app.globalInspection;
+    primary.appendChild(el("div", "inspector-name", g.point.name));
+    primary.appendChild(el("div", "inspector-class-primary", g.point.primaryClass));
+    primary.appendChild(el("div", "inspector-origin", "Global sample"));
+    const tech = section("Global analysis");
+    renderGlobalInspection(tech, app);
+    return { primary, technical: [tech] };
   }
 
   // Step 15E: no stale info when nothing is focused.
-  if (!app.focusedSampleId) {
-    wrap.appendChild(el("div", "inspector-empty", "No sample selected."));
-    return wrap;
+  const selected = app.focusedSampleId ? app.focusedRecord : undefined;
+  if (!app.focusedSampleId || !selected) {
+    const empty = el(
+      "div",
+      "inspector-empty",
+      "Click a sample on the map to see it here.",
+    );
+    empty.setAttribute("data-testid", "inspector-empty");
+    primary.appendChild(empty);
+    return { primary, technical: [] };
   }
 
-  const selected = app.focusedRecord;
-  if (!selected) {
-    wrap.appendChild(el("div", "inspector-empty", "No sample selected."));
-    return wrap;
-  }
   const d = detailView(selected);
 
-  // Sample name (prominent).
+  // ── Primary: name ────────────────────────────────────────────────────────
   const name = el("div", "inspector-name", d.name);
   name.setAttribute("data-testid", "inspector-name");
+  primary.appendChild(name);
 
+  // ── Primary: class + owner (one compact line, no internals) ──────────────
+  const facts = el("div", "inspector-facts");
+  const clsChip = el("span", "inspector-class-primary", d.classification.primaryClass);
+  clsChip.setAttribute("data-testid", "inspector-class");
+  const owner = el("span", "inspector-owner", `Owner: ${d.owner}`);
+  owner.setAttribute("data-testid", "inspector-owner");
+  facts.append(clsChip, owner);
+  primary.appendChild(facts);
+
+  // ── Primary: preview ─────────────────────────────────────────────────────
+  const previewRow = el("div", "inspector-preview-row");
+  const previewing = app.previewSampleId === selected.sampleId;
+  const pbtn = button(
+    previewing ? "preview-btn-pause" : "preview-btn",
+    previewing ? "■ Stop" : "▶ Preview",
+  );
+  pbtn.setAttribute("data-testid", "inspector-preview-toggle");
+  pbtn.onclick = () => void app.togglePreview(selected);
+  previewRow.appendChild(pbtn);
+  if (app.previewError) {
+    previewRow.appendChild(el("div", "preview-error", app.previewError));
+  }
+  primary.appendChild(previewRow);
+
+  // ── Primary: batch selection for "Add to Machiniste" ─────────────────────
+  const inSelection = app.selectedSampleIds.includes(selected.sampleId);
+  const pick = button(
+    "inspector-select-btn",
+    inSelection ? "✓ Selected — remove" : "+ Select for Machiniste",
+  );
+  pick.setAttribute("data-testid", "inspector-select-toggle");
+  pick.setAttribute("aria-pressed", inSelection ? "true" : "false");
+  if (inSelection) pick.classList.add("is-selected");
+  // Batch selection for "Add to Machiniste". `toggleMultiSelect` is
+  // idempotent per record, so the same call adds and removes.
+  pick.onclick = () => app.toggleMultiSelect(selected);
+  primary.appendChild(pick);
+
+  // ── Technical: everything below stays, in the advanced area ─────────────
   const meta = el("pre", "inspector-meta");
   meta.textContent = [
     `Owner: ${d.owner}`,
@@ -2268,10 +2570,11 @@ function renderDetailPanel(app: SampleMapApp): HTMLElement {
   // current queue outcome → persisted delivery marker → none. Conflict /
   // rejected / temporary-unavailable require a concrete queue outcome and are
   // never inferred from the persisted marker alone. No mutation of the queue.
-  let publish: HTMLElement | undefined;
+  const technical: HTMLElement[] = [meta, cls, tags, posEl, musical, community];
+
   const queue = app.globalPublishQueue;
   if (queue) {
-    publish = el("div", "inspector-publish");
+    const publish = el("div", "inspector-publish");
     publish.appendChild(el("h4", undefined, "Global Publish"));
     // BUG #1 (STEP16V): a stale terminal queue item must never mask a newer
     // publish state. The snapshot is append-ordered, so the NEWEST item for the
@@ -2293,20 +2596,7 @@ function renderDetailPanel(app: SampleMapApp): HTMLElement {
     );
     pDeliveryEl.setAttribute("data-testid", "inspector-publish-delivery");
     publish.appendChild(pDeliveryEl);
-  }
-
-  // Preview button — start/stop via the existing PreviewService (Steps 15E §9).
-  const previewRow = el("div", "inspector-preview-row");
-  const previewing = app.previewSampleId === selected.sampleId;
-  const pbtn = button(
-    previewing ? "preview-btn-pause" : "preview-btn",
-    previewing ? "■ Stop" : "▶ Preview",
-  );
-  pbtn.setAttribute("data-testid", "inspector-preview-toggle");
-  pbtn.onclick = () => void app.togglePreview(selected);
-  previewRow.appendChild(pbtn);
-  if (app.previewError) {
-    previewRow.appendChild(el("div", "preview-error", app.previewError));
+    technical.push(publish);
   }
 
   // Step 16L Phase 5: Find Similar — reuse the existing similarity-v1 engine.
@@ -2315,21 +2605,11 @@ function renderDetailPanel(app: SampleMapApp): HTMLElement {
   sbtn.setAttribute("data-testid", "inspector-find-similar");
   sbtn.onclick = () => void app.findSimilarForSelected();
   similarRow.appendChild(sbtn);
+  technical.push(similarRow);
 
-  const appendList: HTMLElement[] = [
-    name,
-    meta,
-    cls,
-    tags,
-    musical,
-    community,
-    posEl,
-  ];
-  if (publish) appendList.push(publish);
-  appendList.push(previewRow, similarRow);
-  wrap.append(...appendList);
-  return wrap;
+  return { primary, technical };
 }
+
 
 /**
  * Step 16L Phase 2: render the canonical GLOBAL inspection for a global-only

@@ -236,15 +236,193 @@ input::placeholder {
   display: none;
 }
 
-/* --- Content: 3-column grid ---------------------------------------- */
+/* --- Content: STEP85 — the map is the product ---------------------------- */
+/* The primary area is a single map-dominant row: the 2D sound space plus a
+ * compact sample panel. The three-column technical layout now lives inside the
+ * closed Advanced drawer (see .advanced-grid below). */
 
 .app-content {
   display: grid;
-  grid-template-columns: 240px minmax(420px, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) 320px;
   gap: var(--space-4);
   align-items: start;
   padding: var(--space-4);
   flex: 1 1 auto;
+}
+
+.map-panel-primary {
+  /* The map takes every pixel the compact inspector does not need. */
+  display: flex;
+  flex-direction: column;
+}
+
+.map-panel-primary .sample-map-host {
+  min-height: 62vh;
+}
+
+.map-count-line {
+  margin-top: var(--space-2);
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.inspector-primary {
+  position: sticky;
+  top: var(--space-4);
+}
+
+.inspector-primary .inspector-name {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.inspector-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-2);
+}
+
+.inspector-facts .inspector-owner {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.inspector-primary .inspector-preview-row {
+  margin-top: var(--space-3);
+}
+
+.inspector-primary .inspector-select-btn {
+  width: 100%;
+  margin-top: var(--space-2);
+}
+
+.inspector-primary .inspector-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: var(--space-3) 0;
+}
+
+/* --- Advanced drawer: everything that is not the primary flow ------------ */
+/* A closed <details> element collapses to its summary line, so the secondary
+ * surfaces cost one row until the user asks for them. */
+
+.advanced-area {
+  grid-column: 1 / -1;
+  background: var(--bg-panel);
+  border: var(--border-w) solid var(--border-weak);
+  border-radius: var(--radius-md);
+  margin: 0 var(--space-4) var(--space-4);
+  padding: 0;
+}
+
+.advanced-summary {
+  cursor: pointer;
+  padding: var(--space-3) var(--space-4);
+  font-size: 12px;
+  color: var(--text-secondary);
+  list-style: revert;
+  user-select: none;
+}
+
+.advanced-summary:hover {
+  color: var(--text-primary);
+}
+
+.advanced-body {
+  border-top: var(--border-w) solid var(--border-weak);
+  padding: var(--space-4) 0 0;
+}
+
+.advanced-grid {
+  display: grid;
+  grid-template-columns: 240px minmax(420px, 1fr) 320px;
+  gap: var(--space-4);
+  align-items: start;
+  padding: 0 var(--space-4) var(--space-4);
+}
+
+/* --- STEP85: primary header controls ------------------------------------ */
+
+.header-visibility {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 0 auto;
+}
+
+.header-visibility button[data-active="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--fg-on-accent, #fff);
+}
+
+.header-visibility button[data-identity-unavailable="true"] {
+  opacity: 0.6;
+}
+
+.header-project {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 280px;
+}
+
+.header-project-label,
+.machiniste-picker-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.header-project-select,
+.machiniste-picker-select {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--panel-raised);
+  border: var(--border-w) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.45rem;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.header-project-select:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.header-project-error {
+  font-size: 11px;
+  color: var(--danger, #e2564d);
+  overflow-wrap: anywhere;
+}
+
+.machiniste-picker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-right: var(--space-2);
+  min-width: 0;
+}
+
+button#header-advanced-btn[data-open="true"],
+button[data-testid="header-advanced"][data-open="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--fg-on-accent, #fff);
+}
+
+.header-index-status {
+  font-variant-numeric: tabular-nums;
 }
 
 .filter-panel,
@@ -1311,22 +1489,67 @@ button.analysis-budget-btn {
  * ==========================================================================*/
 
 @media (min-width: 1024px) and (max-width: 1279px) {
+  /* STEP85: only the primary row shrinks; the advanced grid keeps the
+   * three-column technical layout because it is now a full-width panel. */
   .app-content {
-    grid-template-columns: 220px minmax(420px, 1fr) 300px;
+    grid-template-columns: minmax(0, 1fr) 300px;
     gap: var(--space-3);
     padding: var(--space-3);
+  }
+
+  .advanced-area {
+    margin: 0 var(--space-3) var(--space-3);
+  }
+
+  .advanced-grid {
+    grid-template-columns: 220px minmax(320px, 1fr) 300px;
+    gap: var(--space-3);
+    padding: 0 var(--space-3) var(--space-3);
   }
 
   .header-search {
     max-width: 360px;
   }
+
+  .header-project {
+    max-width: 180px;
+  }
 }
 
 @media (min-width: 768px) and (max-width: 1023px) {
   .app-content {
-    grid-template-columns: minmax(420px, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-3);
     padding: var(--space-3);
+  }
+
+  .advanced-area {
+    margin: 0 var(--space-3) var(--space-3);
+  }
+
+  /* The advanced surface is a secondary concern here: one column, no
+   * sticky positioning, so it simply stacks under the map. */
+  .advanced-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-3);
+    padding: 0 var(--space-3) var(--space-3);
+  }
+
+  /* STEP85: the compact inspector is a normal block again — the bottom-drawer
+   * treatment existed only for the old full inspector. */
+  .inspector-region {
+    position: static;
+    max-height: none;
+    transform: none;
+    overflow: visible;
+    padding: 0;
+    background: none;
+    border: none;
+    box-shadow: none;
+  }
+
+  .inspector-primary {
+    position: static;
   }
 
   /* E-P5A T5: let the header search shrink so the drawer toggles fit without
@@ -1346,8 +1569,9 @@ button.analysis-budget-btn {
     min-width: 34px;
   }
 
-  /* Filter rail → overlay drawer (hamburger). */
-  .filter-panel {
+  /* Filter rail → overlay drawer (hamburger). Lives inside the advanced area
+   * now, so it only needs to be an overlay while that area is open. */
+  .app-shell[data-advanced-open="true"] .filter-panel {
     position: fixed;
     inset: 0 auto 0 0;
     top: 0;
@@ -1358,33 +1582,7 @@ button.analysis-budget-btn {
     border-right: var(--border-w) solid var(--border-weak);
     padding: var(--space-4);
     overflow-y: auto;
-    transform: translateX(-100%);
-    transition: transform 200ms ease-out;
     box-shadow: var(--shadow-pop);
-  }
-
-  .app-shell.filter-open .filter-panel {
-    transform: translateX(0);
-  }
-
-  /* Inspector → bottom drawer. */
-  .inspector-region {
-    position: fixed;
-    inset: auto 0 0 0;
-    max-height: 55vh;
-    height: auto;
-    z-index: var(--z-drawer);
-    background: var(--bg-panel);
-    border-top: var(--border-w) solid var(--border-weak);
-    padding: var(--space-4);
-    overflow-y: auto;
-    transform: translateY(100%);
-    transition: transform 200ms ease-out;
-    box-shadow: var(--shadow-pop);
-  }
-
-  .app-shell.inspector-open .inspector-region {
-    transform: translateY(0);
   }
 }
 
@@ -1412,6 +1610,19 @@ button.analysis-budget-btn {
   .app-content {
     grid-template-columns: minmax(0, 1fr);
     padding: var(--space-2);
+  }
+
+  .advanced-area {
+    margin: 0 var(--space-2) var(--space-2);
+  }
+
+  .advanced-grid {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 0 var(--space-2) var(--space-2);
+  }
+
+  .action-bar {
+    flex-wrap: wrap;
   }
 }
 

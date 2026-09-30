@@ -1,4 +1,5 @@
 import {
+import { startIndexing } from "./support/startIndexing";
   test,
   expect,
   type Page,
@@ -21,8 +22,7 @@ let page: Page;
 const loadSm = (p: Page) =>
   p.waitForFunction(() => !!(window as any).__sm, null, { timeout: 60_000 });
 
-const firstUseIndex = (p: Page) =>
-  p.locator("[data-testid='first-use-index']").click();
+const beginIndexing = (p: Page) => startIndexing(p);
 
 const analyzeAll = (p: Page) =>
   p.evaluate((b) => (window as any).__sm.analyze(b), 10);
@@ -138,7 +138,7 @@ test.afterAll(async () => {
 test.describe.serial("STEP26 V2 Discovery — Find a sound (shared page)", () => {
   test("E26-01 idle surface: closed by default; open shows 'Find a sound' honest copy", async () => {
     await loadSm(page);
-    await firstUseIndex(page);
+    await beginIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", { timeout: 20_000 });
     await analyzeAll(page);
     await attachV2(page);
@@ -370,7 +370,7 @@ test.describe.serial("STEP26 V2 Discovery — Find a sound (shared page)", () =>
     await loadSm(page);
     // Re-seed the in-memory scan on this fresh page (IndexedDB survives, the
     // scan + V2 stamps live in the harness session).
-    await firstUseIndex(page);
+    await beginIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", { timeout: 20_000 });
     await analyzeAll(page);
     await attachV2(page);

@@ -1,4 +1,5 @@
 import {
+import { startIndexing } from "./support/startIndexing";
   test,
   expect,
   type Page,
@@ -31,8 +32,7 @@ let page: Page;
 const loadSm = (p: Page) =>
   p.waitForFunction(() => !!(window as any).__sm, null, { timeout: 60_000 });
 
-const firstUseIndex = (p: Page) =>
-  p.locator("[data-testid='first-use-index']").click();
+const beginIndexing = (p: Page) => startIndexing(p);
 
 const analyzeAll = (p: Page) =>
   p.evaluate((b) => (window as any).__sm.analyze(b), 10);
@@ -148,7 +148,7 @@ const SAMPLE_IDS_55: string[] = Array.from({ length: 55 }, (_, i) => `samples/ho
 test.describe.serial("STEP28 Persistent Sound Collections — real IndexedDB + real reload", () => {
   test("E28-01 initial state: activeCollectionId null, no auto-restore, empty manager list", async () => {
     await loadSm(page);
-    await firstUseIndex(page);
+    await beginIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", { timeout: 20_000 });
     await analyzeAll(page);
     await attachV2(page);
@@ -210,7 +210,7 @@ test.describe.serial("STEP28 Persistent Sound Collections — real IndexedDB + r
   test("E28-05 reload → saved collection reappears in manager list", async () => {
     await page.reload({ waitUntil: "load" });
     await loadSm(page);
-    await firstUseIndex(page);
+    await beginIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", { timeout: 20_000 });
     await analyzeAll(page);
     await attachV2(page);
@@ -275,7 +275,7 @@ test.describe.serial("STEP28 Persistent Sound Collections — real IndexedDB + r
 
     await page.reload({ waitUntil: "load" });
     await loadSm(page);
-    await firstUseIndex(page);
+    await beginIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", { timeout: 20_000 });
     await analyzeAll(page);
     await attachV2(page);
@@ -409,7 +409,7 @@ test.describe.serial("STEP28 Persistent Sound Collections — real IndexedDB + r
     // The dirty edits were persisted: reload and check "Drums Plus" exists.
     await page.reload({ waitUntil: "load" });
     await loadSm(page);
-    await firstUseIndex(page);
+    await beginIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", { timeout: 20_000 });
     await analyzeAll(page);
     await attachV2(page);
@@ -490,7 +490,7 @@ test.describe.serial("STEP28 Persistent Sound Collections — real IndexedDB + r
   test("E28-16 deleted collection stays deleted across reload", async () => {
     await page.reload({ waitUntil: "load" });
     await loadSm(page);
-    await firstUseIndex(page);
+    await beginIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", { timeout: 20_000 });
     await analyzeAll(page);
     await attachV2(page);
@@ -560,7 +560,7 @@ test.describe.serial("STEP28 Persistent Sound Collections — real IndexedDB + r
 
     await page.reload({ waitUntil: "load" });
     await loadSm(page);
-    await firstUseIndex(page);
+    await beginIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", { timeout: 20_000 });
     await analyzeAll(page);
     await attachV2(page);

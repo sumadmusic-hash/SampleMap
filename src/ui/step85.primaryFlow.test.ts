@@ -120,14 +120,15 @@ describe("STEP85 — primary view is the map plus a compact sample panel", () =>
     expect(body).toContain("primary.appendChild(");
   });
 
-  it("the count line reports the real pipeline stages, not a single number", () => {
+  it("the count line reports held and shown samples, with no cluster vocabulary", () => {
     const body = fn(renderSrc, "function mapCountText(");
-    // Points actually drawn.
-    expect(body).toContain("m.points");
-    // Cluster vs. single breakdown, and how many samples the clusters hide.
-    expect(body).toContain("m.clusters");
-    expect(body).toContain("m.singles");
-    expect(body).toContain("m.covered");
+    // The two numbers that exist: how many samples the map holds, how many drawn.
+    expect(body).toContain("m.total");
+    expect(body).toContain("m.shown");
+    // STEP86 removed clustering: none of its terms may come back.
+    expect(body).not.toContain("cluster");
+    expect(body).not.toContain("m.covered");
+    expect(body).not.toContain("m.singles");
   });
 
   it("the count line is built from the CURRENT render, not the previous frame", () => {
@@ -246,18 +247,25 @@ describe("STEP85 — no business logic or algorithm was changed", () => {
     expect(mapViewSrc).toContain("export function mapPoints(");
     expect(mapViewSrc).toContain("export function globalMapPoints(");
     expect(mapViewSrc).toContain("export function mergeMapPoints(");
-    expect(mapViewSrc).toContain("export function entryCoverage(");
-    expect(mapViewSrc).toContain("export function clusterMapPoints(");
-    // Same thresholds as before.
-    expect(mapViewSrc).toContain("CLUSTER_MIN_POINTS = 24");
+    expect(mapViewSrc).toContain("export function pointAt(");
+    // STEP86 removed the cluster stage wholesale — no remnants may remain.
+    expect(mapViewSrc).not.toContain("clusterMapPoints");
+    expect(mapViewSrc).not.toContain("entryCoverage");
+    expect(mapViewSrc).not.toContain("MapCluster");
+    expect(mapViewSrc).not.toContain("MapEntry");
   });
 
   it("mapRender only OBSERVES the pipeline; it does not change it", () => {
     expect(mapRenderSrc).toContain("export interface MapRenderInfo");
     expect(mapRenderSrc).toContain("onRendered?:");
-    // The counts come from the existing functions, not from a new computation.
-    expect(mapRenderSrc).toContain("entryCoverage(");
-    expect(mapRenderSrc).toContain("clusterMapPoints(");
+    // The counts come from the existing point set, not from a new computation.
+    expect(mapRenderSrc).toContain("total: points.length");
+    // Selection is the new display limit, and it runs AFTER the merge.
+    expect(mapRenderSrc).toContain("selectDisplayedPoints(");
+    // The renderer draws individual points and hit-tests exactly those.
+    expect(mapRenderSrc).toContain("pointAt(displayed");
+    // No cluster structure or cluster interaction is left.
+    expect(mapRenderSrc).not.toContain("cluster");
     // No filtering or record mutation was introduced into the renderer.
     expect(mapRenderSrc).not.toContain("records.filter(");
   });

@@ -1,30 +1,24 @@
 import type { SampleIndexRecord } from "../../persistence/indexStore";
 import {
-  CLUSTER_RADIUS_PX,
   DRAG_THRESHOLD_PX,
   EMPTY_MAP_MESSAGE,
   MAP_HEIGHT,
   MAP_WIDTH,
   MapCamera,
-  MapCluster,
-  MapEntry,
   MapPoint,
   ScreenPosition,
-  ZOOM_STEP,
-  clusterMapPoints,
   defaultMapCamera,
-  entryAt,
-  entryCoverage,
   globalMapPoints,
   mapPoints,
   mergeMapPoints,
   panBy,
+  pointAt,
   pointRadius,
   toScreen,
   tooltipFor,
   zoomBy,
-  zoomToCenterOn,
 } from "./mapView";
+import { selectDisplayedPoints } from "./pointSelection";
 import type { GlobalMapPoint } from "../../global/contract";
 import { soundSpaceCornerLabels } from "../../analysis/soundSpaceProjector";
 import { semanticDotColor } from "./semanticColors";
@@ -76,15 +70,6 @@ export interface SampleMapRenderOptions {
   globalPoints?: readonly GlobalMapPoint[];
   /** Step 16K: called when the user clicks a global-only point. */
   onSelectGlobal?: (point: MapPoint) => void;
-  /**
-   * Called when the user clicks a CLUSTER (LOD PoC).
-   *
-   * A cluster is NOT a sample, so this is deliberately separate from
-   * `onSelect`: a cluster click never selects a record, never triggers a
-   * preview and never persists anything. The renderer additionally zooms the
-   * camera onto the cluster through `onCamera` (see `zoomToCenterOn`).
-   */
-  onClusterSelect?: (cluster: MapCluster) => void;
   /** Current view camera (Step 15F). Defaults to the full-map view. */
   camera?: MapCamera;
   /** Commit a new camera (drag-pan end / wheel zoom). Runtime state only. */
@@ -92,33 +77,26 @@ export interface SampleMapRenderOptions {
   /** Overrides the default "No analyzed samples yet." empty-state message. */
   emptyMessage?: string;
   /**
-   * STEP85 — read-only report of what was actually PAINTED.
+   * STEP86 — read-only report of what was actually PAINTED.
    *
-   * Called after the renderable entries are computed (and also for the empty
-   * map, with zeros). It exists purely so the UI can tell the user apart
-   * between loaded/analyzed samples, deduplicated content identities, rendered
-   * map points and clusters — the four numbers that used to be indistinguishable.
-   * It never influences what is drawn.
+   * Called after the displayed points are chosen (and also for the empty map,
+   * with zeros). It exists purely so the UI can state how many samples the map
+   * holds and how many of them are currently drawn. It never influences what is
+   * drawn.
    */
   onRendered?: (info: MapRenderInfo) => void;
 }
 
-/** STEP85 — the observed counts behind one rendered map frame. */
+/** STEP86 — the observed counts behind one rendered map frame. */
 export interface MapRenderInfo {
   /** Records handed to the map (already filtered by Global/My visibility). */
   readonly records: number;
   /** Local map points after content-identity dedup (before the global merge). */
   readonly localPoints: number;
-  /** Points actually drawn-or-counted, after the local/global merge. */
-  readonly points: number;
-  /** Rendered elements: single points + clusters. */
-  readonly entries: number;
-  /** How many of those elements are clusters. */
-  readonly clusters: number;
-  /** How many of those elements are individual sample points. */
-  readonly singles: number;
-  /** Sum of all point + cluster counts — always equal to `points`. */
-  readonly covered: number;
+  /** Total map points available after the local/global merge. */
+  readonly total: number;
+  /** Points actually drawn — at most `MAX_DISPLAYED_POINTS`. */
+  readonly shown: number;
 }
 
 function svgEl(
@@ -186,31 +164,34 @@ export function renderSampleMap(
     opts.onRendered?.({
       records: opts.records.length,
       localPoints: localPoints.length,
-      points: 0,
-      entries: 0,
-      clusters: 0,
-      singles: 0,
-      covered: 0,
+      total: 0,
+      shown: 0,
     });
     return;
   }
 
-  // LOD / clustering (PoC) — strictly AFTER the existing pipeline above, so
-  // Global/My visibility, the content-identity dedup and the global/local
-  // overlap are all already decided. Clustering only chooses how many of those
-  // very points are painted at this zoom.
-  const entries: readonly MapEntry[] = clusterMapPoints(points, camera.zoom);
+  // STEP86 — the hard display limit. Runs strictly AFTER the existing pipeline
+  // above, so Global/My visibility, the content-identity dedup and the
+  // global/local overlap are all already decided: this only chooses which of
+  // those very points are PAINTED. No coordinate is ever rewritten, and no
+  // aggregate element is ever created.
+  //
+  // The focused point and every batch-selected point are pinned, so a sample
+  // the user is working with can never be the one that disappears.
+  const pinned: string[] = [];
+  if (opts.selectedSampleId !== undefined) pinned.push(opts.selectedSampleId);
+  if (opts.selectedSampleIds) pinned.push(...opts.selectedSampleIds);
+  const displayed = selectDisplayedPoints(points, {
+    zoom: camera.zoom,
+    keepSampleIds: pinned,
+  });
 
-  // STEP85 — report the observed counts (read-only; changes nothing below).
-  const clusterCount = entries.reduce((n, e) => n + (e.kind === "cluster" ? 1 : 0), 0);
+  // STEP86 — report the observed counts (read-only; changes nothing below).
   opts.onRendered?.({
     records: opts.records.length,
     localPoints: localPoints.length,
-    points: points.length,
-    entries: entries.length,
-    clusters: clusterCount,
-    singles: entries.length - clusterCount,
-    covered: entryCoverage(entries),
+    total: points.length,
+    shown: displayed.length,
   });
 
   const svg = svgEl("svg", {
@@ -298,49 +279,11 @@ export function renderSampleMap(
   const restRadius = pointRadius(camera.zoom) / camera.zoom;
   const emphasizedRadius = pointRadius(camera.zoom, true) / camera.zoom;
 
-  // Points: one per analyzed record, positioned ONLY by the view-model; the
-  // camera transform moves the whole group, never the circles themselves.
-  //
-  // With the LOD PoC the loop walks RENDER ENTRIES: a cell holding one point
-  // paints exactly the circle it painted before, a cell holding several paints
-  // ONE cluster (circle + count) instead of N circles.
-  const clusterRadius = CLUSTER_RADIUS_PX / camera.zoom;
-  for (const entry of entries) {
-    if (entry.kind === "cluster") {
-      const s = toScreen(entry, { width: MAP_WIDTH, height: MAP_HEIGHT });
-      const group = svgEl("g", {
-        class: "map-cluster",
-        transform: `translate(${s.x} ${s.y})`,
-        "data-testid": `map-cluster-${entry.cell}`,
-        "data-cluster-cell": entry.cell,
-        "data-cluster-count": entry.count,
-      });
-      // A cluster is not a sample: it carries NO `data-sample-id` (and no
-      // sample-scoped testid), so it can never be mistaken for — or selected
-      // as — one of the samples it stands for.
-      group.appendChild(
-        svgEl("circle", { cx: 0, cy: 0, r: clusterRadius, class: "map-cluster-dot" }),
-      );
-      const label = svgEl("text", {
-        x: 0,
-        y: clusterRadius * 0.36,
-        "text-anchor": "middle",
-        class: "map-cluster-count",
-        // The camera scales the whole content group, so expressing the size in
-        // base units divided by the zoom keeps it constant in SCREEN px — the
-        // same rule the point radius follows.
-        "font-size": clusterRadius * 1.2,
-      });
-      label.textContent = String(entry.count);
-      group.appendChild(label);
-      const clusterTitle = svgEl("title", {});
-      clusterTitle.textContent = `${entry.count} samples — click to zoom in`;
-      group.appendChild(clusterTitle);
-      content.appendChild(group);
-      continue;
-    }
-
-    const point = entry.point;
+  // Points: one circle per DISPLAYED map point, positioned ONLY by the
+  // view-model; the camera transform moves the whole group, never the circles
+  // themselves. STEP86 removed aggregation entirely — every painted element is a
+  // real sample point at its real `mapPosition`-derived coordinate.
+  for (const point of displayed) {
     const s = toScreen(point, { width: MAP_WIDTH, height: MAP_HEIGHT });
     const focused = point.sampleId === opts.selectedSampleId;
     // FINAL UI/UX v1.1 Phase 1: batch-selected points get the selection
@@ -371,31 +314,21 @@ export function renderSampleMap(
 
   function hoverClear(): void {
     hideTooltip(tip);
-    for (const el of content.querySelectorAll(
-      ".map-point-hovered, .map-cluster-hovered",
-    )) {
+    for (const el of content.querySelectorAll(".map-point-hovered")) {
       el.classList.remove("map-point-hovered");
-      el.classList.remove("map-cluster-hovered");
     }
   }
 
   function hoverAt(base: ScreenPosition): void {
-    // Hit-test the RENDERED entries, not the raw points: a member of a
-    // collapsed cluster is not painted, so it must not answer a hover either.
-    const hit = entryAt(entries, base, camera);
+    // Hit-test the DISPLAYED points, not the full set: a point that the display
+    // limit left out is not painted, so it must not answer a hover either.
+    const hit = pointAt(displayed, base, camera);
     hoverClear();
     if (!hit) return;
-    if (hit.kind === "cluster") {
-      content
-        .querySelector(`[data-cluster-cell="${hit.cluster.cell}"]`)
-        ?.classList.add("map-cluster-hovered");
-      showClusterTooltip(tip, hit.cluster);
-      return;
-    }
     content
-      .querySelector(`[data-sample-id="${hit.point.sampleId}"]`)
+      .querySelector(`[data-sample-id="${hit.sampleId}"]`)
       ?.classList.add("map-point-hovered");
-    showTooltip(tip, hit.point);
+    showTooltip(tip, hit);
   }
 
   svg.addEventListener("pointermove", (e) => {
@@ -419,18 +352,9 @@ export function renderSampleMap(
 
   svg.addEventListener("pointerdown", (e) => {
     const base = clientToBase(svg, { x: e.clientX, y: e.clientY });
-    // Hit-test the rendered entries, so a collapsed cluster answers as a
-    // cluster and never as one of its undrawn members.
-    const hit = entryAt(entries, base, camera);
-    if (hit) {
-      if (hit.kind === "cluster") {
-        // Cluster click: zoom the view onto the cluster. No selection, no
-        // preview, no persistence — a cluster is not a sample.
-        opts.onClusterSelect?.(hit.cluster);
-        opts.onCamera?.(zoomToCenterOn(camera, hit.cluster, ZOOM_STEP));
-        return;
-      }
-      const point = hit.point;
+    // Hit-test the displayed points, so only a painted point can be selected.
+    const point = pointAt(displayed, base, camera);
+    if (point) {
       const record = byId.get(point.sampleId);
       if (record) {
         opts.onSelect?.(record);
@@ -504,27 +428,6 @@ function showTooltip(tip: HTMLElement, point: MapPoint): void {
 
   tip.textContent = "";
   tip.append(name, cls, owner, tags, note);
-  tip.style.display = "block";
-}
-
-/**
- * Hover info for a CLUSTER (LOD PoC).
- *
- * A cluster is not a sample, so it must not show a sample tooltip: no name, no
- * class, no owner and no tags of some arbitrary member. It states the count and
- * the available action instead.
- */
-function showClusterTooltip(tip: HTMLElement, cluster: MapCluster): void {
-  const count = document.createElement("div");
-  count.className = "map-tooltip-name";
-  count.textContent = `${cluster.count} samples`;
-
-  const hint = document.createElement("div");
-  hint.className = "map-tooltip-class";
-  hint.textContent = "Zoom in to separate these samples";
-
-  tip.textContent = "";
-  tip.append(count, hint);
   tip.style.display = "block";
 }
 

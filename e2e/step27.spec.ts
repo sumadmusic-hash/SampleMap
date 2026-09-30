@@ -1,4 +1,5 @@
 import {
+import { startIndexing } from "./support/startIndexing";
   test,
   expect,
   type Page,
@@ -24,8 +25,7 @@ let page: Page;
 const loadSm = (p: Page) =>
   p.waitForFunction(() => !!(window as any).__sm, null, { timeout: 60_000 });
 
-const firstUseIndex = (p: Page) =>
-  p.locator("[data-testid='first-use-index']").click();
+const beginIndexing = (p: Page) => startIndexing(p);
 
 const analyzeAll = (p: Page) =>
   p.evaluate((b) => (window as any).__sm.analyze(b), 10);
@@ -131,7 +131,7 @@ const LEAD = "samples/lead-ohm";
 test.describe.serial("STEP27 V2 Sound Collections — shared page", () => {
   test("E27-01 fresh state: collection closed+empty and My Sounds hidden (STEP32); a real add reveals it", async () => {
     await loadSm(page);
-    await firstUseIndex(page);
+    await beginIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", { timeout: 20_000 });
     await analyzeAll(page);
     await attachV2(page);

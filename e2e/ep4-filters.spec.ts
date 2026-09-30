@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { startIndexing } from "./support/startIndexing";
 
 /**
  * STEP16R E-P4 — Structured filters against the OFFLINE harness
@@ -79,7 +80,7 @@ test.describe.serial("STEP16R E-P4 structured filters (shared page)", () => {
     await loadSm(page);
 
     // Index + analyze the fixture set once.
-    await page.locator("[data-testid='first-use-index']").click();
+    await startIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", {
       timeout: 20_000,
     });

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { startIndexing } from "./support/startIndexing";
 
 /**
  * STEP16R E-P3 — Selection / Send polish against the OFFLINE harness
@@ -47,7 +48,7 @@ test.describe.serial("STEP16R E-P3 selection / send polish (shared page)", () =>
     await loadSm(page);
 
     // Index the fixture set once (real scan/decode/analysis).
-    await page.locator("[data-testid='first-use-index']").click();
+    await startIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", {
       timeout: 20_000,
     });

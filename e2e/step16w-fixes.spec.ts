@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { startIndexing } from "./support/startIndexing";
 
 /**
  * STEP16W — post-bug-hunt regression fixes (STEP16V BUG #1–#5).
@@ -45,7 +46,7 @@ test.beforeAll(async ({ browser }) => {
   await loadSm(page);
 
   // Index + analyze the fixture set once (real pipeline once).
-  await page.locator("[data-testid='first-use-index']").click();
+  await startIndexing(page);
   await expect(page.locator(".scan-status")).toContainText("Complete", {
     timeout: 20_000,
   });

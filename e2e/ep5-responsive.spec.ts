@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { startIndexing } from "./support/startIndexing";
 
 /**
  * STEP16R E-P5A T5 — Dedicated responsive coverage for 768–1023 px against the
@@ -51,7 +52,7 @@ test.describe.serial("STEP16R E-P5A responsive 768-1023 (own viewport)", () => {
     await loadSm(page);
 
     // Index + analyze the fixture set once (isolated context).
-    await page.locator("[data-testid='first-use-index']").click();
+    await startIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", {
       timeout: 20_000,
     });

@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { startIndexing } from "./support/startIndexing";
 
 /**
  * STEP52 — User Workflow & UX audit (OFFLINE evidence).
@@ -229,7 +230,7 @@ test.describe.serial("STEP52 UX audit — observed states", () => {
   });
 
   test("52-02 index then analyze: the main working screen", async () => {
-    await page.locator("[data-testid='first-use-index']").click();
+    await startIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", { timeout: 20_000 });
     await dump("02-indexed");
     await page.evaluate((b) => (window as any).__sm.analyze(b), 10);

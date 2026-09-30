@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { startIndexing } from "./support/startIndexing";
 
 /**
  * STEP50 — Map spatial-distribution usability checks against the OFFLINE
@@ -78,7 +79,7 @@ test.afterAll(async () => {
 test.describe.serial("STEP50 map usability (offline harness fixtures)", () => {
   test("50M-01 load + index + analyze → 4 map points, base positions recorded", async () => {
     await loadSm(page);
-    await page.locator("[data-testid='first-use-index']").click();
+    await startIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", {
       timeout: 20_000,
     });

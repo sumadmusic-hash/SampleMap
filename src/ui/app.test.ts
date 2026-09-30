@@ -2437,38 +2437,32 @@ describe("SampleMap UI : STEP83 live publish after verified Machiniste send", ()
 });
 
 // ---------------------------------------------------------------------------
-// STEP85 — the primary-flow controller state.
+// STEP85/86 — the primary-flow controller state.
 //
 // The UI refactor is presentation only, so these tests pin the three pieces of
-// NEW controller state it relies on: the observed map counts, the Machiniste
-// target used by the primary action, and the project picker.
+// controller state it relies on: the observed map counts, the Machiniste target
+// used by the primary action, and the project picker.
 // ---------------------------------------------------------------------------
 
-describe("SampleMap UI : STEP85 primary-flow state", () => {
+describe("SampleMap UI : primary-flow state", () => {
   it("mapRendered starts empty and records exactly what the renderer reported", async () => {
     const { app, db } = await mk();
     try {
       // Before the first render the UI must not claim any samples.
-      expect(app.mapRendered.points).toBe(0);
-      expect(app.mapRendered.clusters).toBe(0);
+      expect(app.mapRendered.total).toBe(0);
+      expect(app.mapRendered.shown).toBe(0);
 
       app.setMapRendered({
         records: 437,
         localPoints: 353,
-        points: 353,
-        entries: 97,
-        clusters: 85,
-        singles: 12,
-        covered: 341,
+        total: 353,
+        shown: 353,
       });
       expect(app.mapRendered).toEqual({
         records: 437,
         localPoints: 353,
-        points: 353,
-        entries: 97,
-        clusters: 85,
-        singles: 12,
-        covered: 341,
+        total: 353,
+        shown: 353,
       });
     } finally {
       await db.close();
@@ -2486,15 +2480,13 @@ describe("SampleMap UI : STEP85 primary-flow state", () => {
       app.setMapRendered({
         records: 10,
         localPoints: 8,
-        points: 8,
-        entries: 8,
-        clusters: 0,
-        singles: 8,
-        covered: 0,
+        total: 8,
+        shown: 8,
       });
       // A notify() here would recurse forever inside renderApp.
       expect(renders).toBe(0);
-      expect(app.mapRendered.points).toBe(8);
+      expect(app.mapRendered.total).toBe(8);
+      expect(app.mapRendered.shown).toBe(8);
     } finally {
       await db.close();
     }

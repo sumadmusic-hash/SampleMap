@@ -632,19 +632,15 @@ export class SampleMapApp {
   }
 
   /**
-   * STEP85 — what the map actually painted in the last frame, as OBSERVED by
-   * the renderer. Lets the UI state the four numbers separately (analyzed
-   * samples, deduplicated identities, drawn points, clusters) instead of
-   * letting the user guess why the map looks sparse.
+   * STEP86 — what the map actually painted in the last frame, as OBSERVED by the
+   * renderer. Lets the UI state how many samples the map holds and how many of
+   * them are currently drawn, with no invented extra vocabulary.
    */
   mapRendered: MapRenderInfo = {
     records: 0,
     localPoints: 0,
-    points: 0,
-    entries: 0,
-    clusters: 0,
-    singles: 0,
-    covered: 0,
+    total: 0,
+    shown: 0,
   };
 
   /**

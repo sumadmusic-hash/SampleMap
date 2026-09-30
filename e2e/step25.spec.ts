@@ -1,4 +1,5 @@
 import {
+import { startIndexing } from "./support/startIndexing";
   test,
   expect,
   type Page,
@@ -20,8 +21,7 @@ let page: Page;
 const loadSm = (p: Page) =>
   p.waitForFunction(() => !!(window as any).__sm, null, { timeout: 60_000 });
 
-const firstUseIndex = (p: Page) =>
-  p.locator("[data-testid='first-use-index']").click();
+const beginIndexing = (p: Page) => startIndexing(p);
 
 const analyzeAll = (p: Page) =>
   p.evaluate((b) => (window as any).__sm.analyze(b), 10);
@@ -158,7 +158,7 @@ test.afterAll(async () => {
 test.describe.serial("STEP25 V2 Sound Space Interaction, Filtering & Compare (shared page)", () => {
   test("E25-01 empty state: no filters rendered, honest copy", async () => {
     await loadSm(page);
-    await firstUseIndex(page);
+    await beginIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", {
       timeout: 20_000,
     });
@@ -618,7 +618,7 @@ test.describe.serial("STEP25 V2 Sound Space Interaction, Filtering & Compare (sh
     // Fresh navigation so the bench is deterministic (fresh IndexedDB).
     await page.goto("/harness.html");
     await loadSm(page);
-    await firstUseIndex(page);
+    await beginIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", {
       timeout: 20_000,
     });

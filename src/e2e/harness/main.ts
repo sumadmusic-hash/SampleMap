@@ -33,13 +33,11 @@ import type {
   GlobalMapPoint,
 } from "../../global/contract";
 import {
-  clusterMapPoints,
-  entryCoverage,
   globalMapPoints,
   mapPoints,
   mergeMapPoints,
-  type MapEntry,
 } from "../../ui/map/mapView";
+import { MAX_DISPLAYED_POINTS, selectDisplayedPoints } from "../../ui/map/pointSelection";
 import { visibleGlobalPoints } from "../../ui/map/visibility";
 import {
   acceptUsageAndEnqueue,
@@ -678,12 +676,12 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
         /**
          * Serve `count` SYNTHETIC global map points and refresh.
          *
-         * The LOD/clustering PoC needs a map far denser than the 4 fixture
+         * The display limit needs a map far denser than the 4 fixture
          * records. `mirrorRecord` can only ever serve persisted records, so
          * this hook manufactures points on a deterministic lattice-plus-jitter
          * (no `Math.random`, so every run is byte-identical) with unique
          * content identities. They arrive through the normal
-         * `queryMapViewport` -> `globalMapPoints()` path, so the clustering
+         * `queryMapViewport` -> `globalMapPoints()` path, so the selection
          * layer sees exactly what production sees.
          */
         serveMany: (count: number) => Promise<GlobalMapPoint[]>;
@@ -691,10 +689,10 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
          * Serve `count` SYNTHETIC global map points with a REALISTIC spatial
          * mix and refresh. Returns the served points.
          *
-         * `serveMany` is a uniform lattice, which is the worst case for
-         * clustering (every cell fills at the same rate). This hook serves the
-         * distribution a real library actually has, so a stress run measures
-         * something meaningful:
+         * `serveMany` is a uniform lattice, which is the worst case for the
+         * spatial selection (every cell fills at the same rate). This hook
+         * serves the distribution a real library actually has, so a stress run
+         * measures something meaningful:
          *
          *   ~45%  normal-distributed cloud over the whole map (Box-Muller)
          *   ~20%  tight dense hotspots (sigma 0.02-0.05)
@@ -706,7 +704,7 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
          * same (count, seed) always yields byte-identical points.
          *
          * `order` only permutes the SERVED order (same point set) so the
-         * clustering layer's order-independence can be verified in a real
+         * selection layer's order-independence can be verified in a real
          * browser.
          */
         serveRealistic: (
@@ -715,39 +713,31 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
         ) => Promise<GlobalMapPoint[]>;
         /**
          * Serve `count` synthetic global map points that are FULLY COINCIDENT
-         * (identical x/y) and refresh. This is the exact probe for
-         * CLUSTER_MIN_POINTS: a cell can hold at most one cluster, so
-         * `clusters === 0` below the threshold and `clusters === 1` from the
-         * threshold upwards. Returns the served points.
+         * (identical x/y) and refresh. This is the exact probe for the display
+         * limit: many points share one coordinate, so the limit is reached and
+         * a `data-sample-id` lookup is the only way to tell which of them the
+         * map actually draws. Returns the served points.
          */
         serveCoincident: (count: number) => Promise<GlobalMapPoint[]>;
         clear: () => Promise<void>;
         current: () => GlobalMapPoint[];
       };
       /**
-       * READ-ONLY inspection of the PRODUCT clustering function (test-only).
+       * READ-ONLY inspection of the PRODUCT display limit (test-only).
        *
        * Re-runs the exact renderer pipeline for the app's current state
-       * (`visibleMapRecords` + visible global points -> merge -> cluster) and
-       * returns the entries, so a stress run can compare the real DOM against
-       * the product result and read the per-cluster MEMBER assignment (which
-       * the DOM deliberately does not expose, because a cluster carries no
-       * sample identity).
+       * (`visibleMapRecords` + visible global points -> merge -> display limit)
+       * and returns which sample ids the map would draw, so a stress run can
+       * compare the real DOM against the product result.
        *
        * It changes nothing: no state is written, nothing is re-rendered.
        */
-      cluster: {
+      display: {
         inspect: (zoom: number) => {
           merged: number;
-          entries: Array<{
-            kind: "point" | "cluster";
-            cell: string | null;
-            count: number;
-            x: number;
-            y: number;
-            members: string[];
-          }>;
-          coverage: number;
+          shown: number;
+          limit: number;
+          sampleIds: string[];
         };
       };
       /**
@@ -961,8 +951,8 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
          */
         serveMany: async (count: number): Promise<GlobalMapPoint[]> => {
           const points: GlobalMapPoint[] = [];
-          // Deterministic lattice + jitter: dense enough that the zoomed-out
-          // map MUST cluster, spread enough that it also resolves on zoom-in.
+          // Deterministic lattice + jitter: dense enough that the display
+          // limit is reached, spread enough that zooming in changes the set.
           const side = Math.max(1, Math.ceil(Math.sqrt(count)));
           for (let i = 0; i < count; i++) {
             const col = i % side;
@@ -1124,9 +1114,9 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
         /** The global points the app currently holds. */
         current: (): GlobalMapPoint[] => app.globalPoints,
       },
-      cluster: {
+      display: {
         inspect: (zoom: number) => {
-          // Mirrors render.ts -> renderSampleMap() exactly.
+          // Mirrors mapRender.ts -> renderSampleMap() exactly.
           const local = mapPoints(app.visibleMapRecords);
           // render.ts passes the visible globals; the renderer converts them
           // with globalMapPoints() before merging. Same order, same functions.
@@ -1134,29 +1124,15 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
             visibleGlobalPoints(app.globalPoints, app.visibility),
           );
           const merged = mergeMapPoints(local, globals);
-          const entries: MapEntry[] = clusterMapPoints(merged, zoom);
+          // The same pin set the renderer uses: focus + batch selection.
+          const keep = [...app.selectedSampleIds];
+          if (app.focusedSampleId) keep.push(app.focusedSampleId);
+          const displayed = selectDisplayedPoints(merged, { zoom, keepSampleIds: keep });
           return {
             merged: merged.length,
-            entries: entries.map((e) =>
-              e.kind === "point"
-                ? {
-                    kind: "point" as const,
-                    cell: null,
-                    count: 1,
-                    x: e.point.x,
-                    y: e.point.y,
-                    members: [e.point.sampleId],
-                  }
-                : {
-                    kind: "cluster" as const,
-                    cell: e.cell,
-                    count: e.count,
-                    x: e.x,
-                    y: e.y,
-                    members: e.points.map((p) => p.sampleId),
-                  },
-            ),
-            coverage: entryCoverage(entries),
+            shown: displayed.length,
+            limit: MAX_DISPLAYED_POINTS,
+            sampleIds: displayed.map((p) => p.sampleId),
           };
         },
       },

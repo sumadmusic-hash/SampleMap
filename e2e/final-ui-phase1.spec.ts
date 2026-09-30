@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { startIndexing } from "./support/startIndexing";
 
 /**
  * FINAL_UI_UX_DESIGN_SPEC v1.1 — Phase 1 (shell / action bar / first-use) e2e
@@ -84,9 +85,11 @@ test.describe.serial("FINAL UI v1.1 Phase 1 shell (shared page)", () => {
     await expect(overlay.locator(".first-use-sub")).toContainText(
       "explorable soundscape",
     );
-    await expect(
-      overlay.locator("[data-testid='first-use-index']"),
-    ).toContainText("Connect Audiotool & start indexing");
+    // STEP86: the first-use overlay is information only — no scan CTA.
+    await expect(overlay.locator("[data-testid='first-use-index']")).toHaveCount(0);
+    await expect(overlay.locator(".first-use-sub")).toContainText(
+      "Indexing your library in the background",
+    );
 
     // Action bar idle state: empty pill + disabled Add.
     const pill = page.locator("[data-testid='selection-pill']");
@@ -105,7 +108,7 @@ test.describe.serial("FINAL UI v1.1 Phase 1 shell (shared page)", () => {
 
   test("FP-02 CTA runs the index; overlay gives way to the point cloud", async () => {
     // The first-use CTA triggers the real bounded library scan.
-    await page.locator("[data-testid='first-use-index']").click();
+    await startIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", {
       timeout: 20_000,
     });

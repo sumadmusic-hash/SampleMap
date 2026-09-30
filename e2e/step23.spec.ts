@@ -1,4 +1,5 @@
 import {
+import { startIndexing } from "./support/startIndexing";
   test,
   expect,
   type Page,
@@ -35,8 +36,7 @@ let page: Page;
 const loadSm = (p: Page) =>
   p.waitForFunction(() => !!(window as any).__sm, null, { timeout: 60_000 });
 
-const firstUseIndex = (p: Page) =>
-  p.locator("[data-testid='first-use-index']").click();
+const beginIndexing = (p: Page) => startIndexing(p);
 
 const analyzeAll = (p: Page) =>
   p.evaluate((b) => (window as any).__sm.analyze(b), 10);
@@ -139,7 +139,7 @@ test.afterAll(async () => {
 test.describe.serial("STEP23 V2 Find Similar (shared page)", () => {
   test("E23-01 no focused sample: Find Similar hidden until focus (STEP32); empty surface when opened with no focus", async () => {
     await loadSm(page);
-    await firstUseIndex(page);
+    await beginIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", {
       timeout: 20_000,
     });

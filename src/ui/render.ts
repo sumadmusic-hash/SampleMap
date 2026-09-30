@@ -1037,22 +1037,17 @@ function renderFiltersPanel(app: SampleMapApp): HTMLElement {
 }
 
 /**
- * STEP85 — the honest map count line.
+ * STEP86 — the honest map count.
  *
- * Answers the question the old UI left open: "why do I see so few dots?". The
- * four numbers are the pipeline's real stages and are reported separately:
- * loaded/analyzed samples, deduplicated content identities, the points actually
- * drawn, and how many of those are clusters.
+ * Reports the two numbers that matter and nothing else: how many samples the
+ * map holds, and how many of them are drawn. The STEP85 breakdown is gone
+ * together with the aggregates it described; nothing replaces it.
  */
 function mapCountText(app: SampleMapApp): string {
   const m = app.mapRendered;
-  if (m.points === 0) return "No samples on the map";
-  const parts = [`${m.points} samples on the map`];
-  if (m.clusters > 0) {
-    parts.push(`${m.clusters} clusters showing ${m.covered} samples`);
-    parts.push(`${m.singles} individual`);
-  }
-  return parts.join(" · ");
+  if (m.total === 0) return "No samples on the map";
+  if (m.shown >= m.total) return `${m.total} samples`;
+  return `${m.total} samples · ${m.shown} shown`;
 }
 
 function renderMapPanel(app: SampleMapApp): HTMLElement {
@@ -1126,7 +1121,7 @@ function renderMapPanel(app: SampleMapApp): HTMLElement {
       hasActiveSearch(app.searchState),
     )
   ) {
-    wrap.appendChild(renderFirstUseOverlay(app));
+    wrap.appendChild(renderFirstUseOverlay());
     const empty = wrap.querySelector(".map-empty");
     if (empty) (empty as HTMLElement).style.display = "none";
   }
@@ -1134,10 +1129,15 @@ function renderMapPanel(app: SampleMapApp): HTMLElement {
 }
 
 /**
- * The canonical FIRST-USE overlay (§25.1): what SampleMap does, why the map is
- * empty, and the single indexing CTA. Purely informative — no new logic.
+ * First-use note on the primary map.
+ *
+ * STEP86: this is now purely INFORMATION. The product indexes and analyses the
+ * library automatically in the background, so the main view no longer offers a
+ * "start scanning" call to action — a button that merely restates what is
+ * already happening. The technical `Start Scan` control still exists under
+ * Advanced as a manual fallback.
  */
-function renderFirstUseOverlay(app: SampleMapApp): HTMLElement {
+function renderFirstUseOverlay(): HTMLElement {
   const overlay = el("div", "first-use-overlay");
   overlay.setAttribute("data-testid", "first-use");
   overlay.appendChild(
@@ -1147,13 +1147,9 @@ function renderFirstUseOverlay(app: SampleMapApp): HTMLElement {
     el(
       "div",
       "first-use-sub",
-      "Your public Audiotool samples, arranged as an explorable soundscape. Nothing has been indexed yet.",
+      "Your public Audiotool samples, arranged as an explorable soundscape. Indexing your library in the background — samples appear here as they are analyzed.",
     ),
   );
-  const cta = button("first-use-cta", "Connect Audiotool & start indexing");
-  cta.setAttribute("data-testid", "first-use-index");
-  cta.onclick = () => void app.startScan();
-  overlay.appendChild(cta);
   return overlay;
 }
 

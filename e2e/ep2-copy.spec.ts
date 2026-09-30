@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { startIndexing } from "./support/startIndexing";
 
 /**
  * STEP16R E-P2 — Copy + labels verification against the OFFLINE harness
@@ -40,12 +41,14 @@ test.describe.serial("STEP16R E-P2 copy + labels (shared page)", () => {
     await expect(overlay.locator(".first-use-title")).toHaveText(
       "No analyzed samples yet.",
     );
-    await expect(
-      overlay.locator("[data-testid='first-use-index']"),
-    ).toHaveText("Connect Audiotool & start indexing");
+    // STEP86: the first-use overlay is information only — no scan CTA.
+    await expect(overlay.locator("[data-testid='first-use-index']")).toHaveCount(0);
+    await expect(overlay.locator(".first-use-sub")).toContainText(
+      "Indexing your library in the background",
+    );
 
     // Index the fixture set once (real scan/decode/analysis).
-    await page.locator("[data-testid='first-use-index']").click();
+    await startIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", {
       timeout: 20_000,
     });

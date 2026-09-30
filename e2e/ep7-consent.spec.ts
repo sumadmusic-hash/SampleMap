@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { startIndexing } from "./support/startIndexing";
 
 /**
  * STEP19A E-P7 — one-time consent gate (FINAL_UI_UX_DESIGN_SPEC §19.5)
@@ -60,7 +61,7 @@ const getMach = (p: Page): Promise<MachResult> =>
   });
 
 async function indexFixture(p: Page) {
-  await p.locator("[data-testid='first-use-index']").click();
+  await startIndexing(p);
   await expect(p.locator(".scan-status")).toContainText("Complete", {
     timeout: 20_000,
   });

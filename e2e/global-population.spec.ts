@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { startIndexing } from "./support/startIndexing";
 
 /**
  * Step 70 E2E — Automatic Global Population & Map Verification
@@ -61,7 +62,7 @@ test.describe.serial("Step 70 — Automatic Global Population E2E", () => {
     expect(initialPending).toBe(0);
 
     // Scan + analyze fixture library (4 samples)
-    await page.locator("[data-testid='first-use-index']").click();
+    await startIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", {
       timeout: 20_000,
     });

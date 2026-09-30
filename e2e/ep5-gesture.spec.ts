@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { startIndexing } from "./support/startIndexing";
 
 /**
  * STEP16R E-P5A T6 (optional) — Gesture e2e: drag-pan + wheel-zoom move ONLY
@@ -53,7 +54,7 @@ test.describe.serial("STEP16R E-P5A T6 gesture safety (shared page)", () => {
   test("EP5A-09 Drag-pan and wheel-zoom move only the camera", async () => {
     await loadSm(page);
 
-    await page.locator("[data-testid='first-use-index']").click();
+    await startIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", {
       timeout: 20_000,
     });

@@ -5,14 +5,8 @@ import { makeSample } from "../../persistence/test-helpers";
 import { makeFeatures } from "../../classify/test-helpers";
 import { computeSimilarityFingerprint } from "../../similarity/similarityFingerprint";
 import type { GlobalMapPoint } from "../../global/contract";
-import {
-  CLUSTER_MIN_POINTS,
-  clusterMapPoints,
-  entryCoverage,
-  mapPoints,
-  type MapCluster,
-  type MapEntry,
-} from "./mapView";
+import { mapPoints } from "./mapView";
+import { MAX_DISPLAYED_POINTS, selectDisplayedPoints } from "./pointSelection";
 import { resolveMapVisibility, type VisibilityToggles } from "./visibility";
 
 /**
@@ -24,8 +18,8 @@ import { resolveMapVisibility, type VisibilityToggles } from "./visibility";
  *     -> resolveMapVisibility()   (Global / My Samples toggles gate the points)
  *     -> mapPoints()              (content-identity dedup + position requirement)
  *     -> globalMapPoints() + mergeMapPoints()
- *     -> clusterMapPoints()       (LOD, only above CLUSTER_MIN_POINTS)
- *     -> SVG circles / cluster dots
+ *     -> selectDisplayedPoints()  (STEP86: hard display limit, no clustering)
+ *     -> one SVG circle per displayed point
  *
  * Nothing here changes behaviour: every assertion pins what the pipeline
  * ALREADY does, so the numbers that decide "how many things does the user see"
@@ -155,18 +149,18 @@ function smallGlobalPool(records: readonly SampleIndexRecord[], n: number): Glob
 
 const BOTH_ON: VisibilityToggles = { global: true, mine: true };
 
-const clustersOf = (e: readonly MapEntry[]) => e.filter((x): x is MapCluster => x.kind === "cluster");
-const singlesOf = (e: readonly MapEntry[]) => e.filter((x) => x.kind === "point");
-
-describe("STEP85 map count : records -> points -> entries", () => {
-  it("1. the pipeline is LOSSLESS in count: every eligible point is drawn or counted", () => {
-    const { records } = corpus(437);
+describe("map count : records -> points -> displayed", () => {
+  it("1. every eligible point is either DEDUPED or DRAWN, and the display limit is the only cut", () => {
+    const { records } = corpus(1200);
     const visible = resolveMapVisibility(records, undefined, BOTH_ON, AUTH_USER).visibleRecords;
     const points = mapPoints(visible);
-    const entries = clusterMapPoints(points, 1);
+    const displayed = selectDisplayedPoints(points);
 
-    // Nothing is lost between the point set and the rendered set.
-    expect(entryCoverage(entries)).toBe(points.length);
+    // Above the maximum the map shows exactly the limit — and every shown point
+    // is one of the pipeline's own points, at its own coordinate.
+    expect(displayed).toHaveLength(MAX_DISPLAYED_POINTS);
+    const pointIds = new Set(points.map((p) => p.sampleId));
+    for (const d of displayed) expect(pointIds.has(d.sampleId)).toBe(true);
 
     // And nothing is lost between the visible records and the point set except
     // the two documented reductions: content-identity dedup and Missing-V2.
@@ -236,9 +230,9 @@ describe("STEP85 map count : records -> points -> entries", () => {
     // and the whole library is on the map.
     const visible = resolveMapVisibility(records, globalPoints, BOTH_ON, AUTH_USER).visibleRecords;
     const points = mapPoints(visible);
-    const entries = clusterMapPoints(points, 1);
-    expect(entries.length).toBeGreaterThan(10);
-    expect(entryCoverage(entries)).toBe(points.length);
+    const displayed = selectDisplayedPoints(points);
+    expect(displayed.length).toBeGreaterThan(10);
+    expect(displayed).toHaveLength(Math.min(points.length, MAX_DISPLAYED_POINTS));
 
     // The reported symptom: the SAME 437 analyzed records, but ownership could
     // not be determined (auth resolution failed, or the owner string does not
@@ -246,53 +240,50 @@ describe("STEP85 map count : records -> points -> entries", () => {
     // the 3 global identities survive -> a couple of dots, no error anywhere.
     const blind = resolveMapVisibility(records, globalPoints, BOTH_ON, undefined).visibleRecords;
     const blindPoints = mapPoints(blind);
-    const blindEntries = clusterMapPoints(blindPoints, 1);
+    const blindDisplayed = selectDisplayedPoints(blindPoints);
 
     expect(visible.length).toBe(437);
     expect(blind.length).toBe(3);
-    expect(blindEntries).toHaveLength(3);
-    // It is NOT the LOD: the same collapse happens with clustering off.
-    expect(blindEntries).toHaveLength(blindPoints.length);
+    expect(blindDisplayed).toHaveLength(3);
+    // It is NOT the display limit: the same collapse happens far below it.
+    expect(blindDisplayed).toHaveLength(blindPoints.length);
 
     // Turning "My Samples" off reproduces it with a KNOWN identity.
     const mineOff = resolveMapVisibility(records, globalPoints, { global: true, mine: false }, AUTH_USER);
     expect(mineOff.visibleRecords).toHaveLength(3);
   });
 
-  it("5. clustering is OFF below the threshold, so few samples are never clustered away", () => {
+  it("5. at or below the maximum EVERY point is drawn — nothing is ever dropped silently", () => {
     const { records } = corpus(20);
     const visible = resolveMapVisibility(records, undefined, BOTH_ON, AUTH_USER).visibleRecords;
     const points = mapPoints(visible);
-    const entries = clusterMapPoints(points, 1);
+    const displayed = selectDisplayedPoints(points);
 
-    // Fewer than CLUSTER_MIN_POINTS -> every single point is drawn as itself.
-    expect(points.length).toBeLessThan(CLUSTER_MIN_POINTS);
-    expect(clustersOf(entries)).toHaveLength(0);
-    expect(singlesOf(entries)).toHaveLength(points.length);
+    expect(points.length).toBeLessThan(MAX_DISPLAYED_POINTS);
+    expect(displayed).toHaveLength(points.length);
     // The only reduction here is the documented one: content-identity dedup
     // plus the Missing-V2 records. Nothing is dropped by the renderer.
-    expect(entryCoverage(entries)).toBe(points.length);
+    expect(new Set(displayed.map((p) => p.sampleId))).toEqual(new Set(points.map((p) => p.sampleId)));
   });
 
-  it("6. above the threshold the user sees counts, and zooming resolves them", () => {
-    const { records } = corpus(437);
+  it("6. above the maximum the map shows the limit at EVERY zoom, and zoom never invents a point", () => {
+    const { records } = corpus(1200);
     const visible = resolveMapVisibility(records, undefined, BOTH_ON, AUTH_USER).visibleRecords;
     const points = mapPoints(visible);
+    expect(points.length).toBeGreaterThan(MAX_DISPLAYED_POINTS);
 
-    const zoomedOut = clusterMapPoints(points, 1);
-    const zoomedIn = clusterMapPoints(points, 8);
-
-    // Zoomed out: far fewer elements than points, but every point is counted.
-    expect(zoomedOut.length).toBeLessThan(points.length);
-    expect(entryCoverage(zoomedOut)).toBe(points.length);
-    expect(clustersOf(zoomedOut).length).toBeGreaterThan(0);
-    // Every cluster exposes its member count for the label.
-    for (const c of clustersOf(zoomedOut)) expect(c.count).toBe(c.points.length);
-
-    // Zooming in resolves clusters into finer structure, never losing count.
-    expect(zoomedIn.length).toBeGreaterThanOrEqual(zoomedOut.length);
-    expect(entryCoverage(zoomedIn)).toBe(points.length);
-    expect(clustersOf(zoomedIn).length).toBeLessThanOrEqual(clustersOf(zoomedOut).length);
+    for (const zoom of [1, 2, 4, 8]) {
+      const shown = selectDisplayedPoints(points, { zoom });
+      // The limit is HARD: never fewer (nothing else was dropped), never more.
+      expect(shown).toHaveLength(MAX_DISPLAYED_POINTS);
+      // Every drawn point exists in the pipeline, at the pipeline's coordinate.
+      const byId = new Map(points.map((p) => [p.sampleId, p]));
+      for (const s of shown) {
+        expect(byId.has(s.sampleId)).toBe(true);
+        expect(s.x).toBe(byId.get(s.sampleId)!.x);
+        expect(s.y).toBe(byId.get(s.sampleId)!.y);
+      }
+    }
   });
 
   it("7. the global pool adds points, and the merge never duplicates an identity", () => {

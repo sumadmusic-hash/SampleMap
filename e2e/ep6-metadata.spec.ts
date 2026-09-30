@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { startIndexing } from "./support/startIndexing";
 
 /**
  * STEP16S E-P6 — Metadata slice (bpm / numFavorites / numUsages).
@@ -37,7 +38,7 @@ test.describe.serial("STEP16S E-P6 metadata slice (shared page)", () => {
     await loadSm(page);
 
     // Index + analyze the fixture set once (real pipeline once).
-    await page.locator("[data-testid='first-use-index']").click();
+    await startIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", {
       timeout: 20_000,
     });

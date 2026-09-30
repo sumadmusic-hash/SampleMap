@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { startIndexing } from "./support/startIndexing";
 
 /**
  * STEP51 — Live Preview & Sample Interaction verification (OFFLINE layer).
@@ -192,7 +193,7 @@ test.afterAll(async () => {
 
 test.describe.serial("STEP51 offline preview interaction", () => {
   test("51-01 load + index + analyze → 4 points; map click FOCUSES only, never plays", async () => {
-    await page.locator("[data-testid='first-use-index']").click();
+    await startIndexing(page);
     await expect(page.locator(".scan-status")).toContainText("Complete", { timeout: 20_000 });
     await page.evaluate((b) => (window as any).__sm.analyze(b), 10);
     await expect(page.locator(".analysis-status")).toContainText(/Stopped|Idle/, { timeout: 30_000 });

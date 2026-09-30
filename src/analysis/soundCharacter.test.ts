@@ -71,6 +71,81 @@ describe("computeSoundCharacter", () => {
       expect(chars.SILENCE.tonality).toBeNull();
     });
 
+    describe("tonality: periodicity semantics (STEP88)", () => {
+      const t = (k: keyof typeof chars) => chars[k].tonality as number;
+
+      it("a pure tone is strictly more tonal than broadband noise", () => {
+        expect(t("PURE_TONE")).toBeGreaterThan(t("WHITE_NOISE"));
+      });
+
+      it("a pure tone is strictly more tonal than percussive noise", () => {
+        // IMPULSE is the percussive-noise stand-in: broadband, pitchless.
+        expect(t("PURE_TONE")).toBeGreaterThan(t("IMPULSE"));
+      });
+
+      it("harmonic / tonal material stays high and noise stays low", () => {
+        expect(t("PURE_TONE")).toBeGreaterThan(0.8);
+        expect(t("WHITE_NOISE")).toBeLessThan(0.3);
+      });
+
+      it("a missing pitch does NOT by itself imply high tonality", () => {
+        // WHITE_NOISE and IMPULSE have pitchConfidence = null. Renormalizing over
+        // the present dims must fall back to the periodicity measure, never to a
+        // "no pitch => tonal" default.
+        expect(WHITE_NOISE.pitchConfidence).toBeNull();
+        expect(IMPULSE.pitchConfidence).toBeNull();
+        expect(t("WHITE_NOISE")).toBeLessThan(0.3);
+        expect(t("IMPULSE")).toBeLessThan(0.3);
+        expect(t("WHITE_NOISE")).toBeCloseTo(WHITE_NOISE.harmonicity as number, 12);
+        expect(t("IMPULSE")).toBeCloseTo(IMPULSE.harmonicity as number, 12);
+      });
+
+      it("tonality is the weighted mean of the PRESENT periodicity inputs", () => {
+        expect(t("PURE_TONE")).toBeCloseTo(0.8 * (PURE_TONE.harmonicity as number) + 0.2 * (PURE_TONE.pitchConfidence as number), 12);
+        expect(t("SILENCE")).toBeNull();
+      });
+
+      it("tonality never leaves [0,1] and stays finite for out-of-spec inputs", () => {
+        for (const name in ALL) {
+          const v = chars[name as keyof typeof chars].tonality;
+          if (v === null) continue;
+          expect(Number.isFinite(v)).toBe(true);
+          expect(v).toBeGreaterThanOrEqual(0);
+          expect(v).toBeLessThanOrEqual(1);
+        }
+        // harmonicity is the primary term: even with a maximal corroborating
+        // pitchConfidence the result cannot exceed 1, and even with a
+        // non-finite/absent one it stays inside the range.
+        const forced = computeSoundCharacter({
+          ...PURE_TONE,
+          harmonicity: 0.5,
+          pitchConfidence: 1,
+        });
+        expect(forced.tonality).toBeCloseTo(0.8 * 0.5 + 0.2 * 1, 12);
+      });
+
+      it("a strongly gated pitchConfidence cannot dominate a low periodicity score", () => {
+        // STEP88 regression: pitchConfidence > 0.7 is guaranteed for any value
+        // that exists, so at the old 0.6 weight it forced tonality >= 0.42.
+        const noisyButVoiced = computeSoundCharacter({
+          ...PURE_TONE,
+          harmonicity: 0.05,
+          pitchConfidence: 0.75,
+        });
+        expect(noisyButVoiced.tonality as number).toBeLessThan(0.25);
+        expect(noisyButVoiced.tonality as number).toBeCloseTo(0.8 * 0.05 + 0.2 * 0.75, 12);
+      });
+
+      it("null DSP features keep their null semantics (no 0-substitution)", () => {
+        const harmonicityOnly = computeSoundCharacter({ ...PURE_TONE, pitchConfidence: null });
+        expect(harmonicityOnly.tonality).toBeCloseTo(PURE_TONE.harmonicity as number, 12);
+        const pitchOnly = computeSoundCharacter({ ...PURE_TONE, harmonicity: null });
+        expect(pitchOnly.tonality).toBeCloseTo(PURE_TONE.pitchConfidence as number, 12);
+        const neither = computeSoundCharacter({ ...PURE_TONE, harmonicity: null, pitchConfidence: null });
+        expect(neither.tonality).toBeNull();
+      });
+    });
+
     it("noisiness: WHITE_NOISE > IMPULSE > SHORT_PERCUSSION > PURE_TONE; SILENCE finite", () => {
       const n = (k: keyof typeof chars) => chars[k].noisiness as number;
       expect(n("WHITE_NOISE")).toBeGreaterThan(n("IMPULSE"));

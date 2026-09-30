@@ -90,10 +90,23 @@ function norm(value: number | null, range: RangeKey & NormalizeRange): number | 
  *   density    <- spectralFlux / zeroCrossingRate / transientStrength
  *   transient  <- 1 - attack (fast onset = transient) / transientStrength / crest
  *   duration   <- log-mapped durationSec
- *   tonality   <- pitchConfidence / harmonicity
+ *   tonality   <- harmonicity (primary) / pitchConfidence (corroborating)
  *   noisiness  <- spectralFlatness / (1 - harmonicity) / zeroCrossingRate
  *   dynamics   <- crestFactor / decayTimeSec
  *   complexity <- spectralFlux / zeroCrossingRate / spectralSpreadHz
+ *
+ * STEP88 — `tonality` is weighted on `harmonicity` (0.8) over
+ * `pitchConfidence` (0.2). `harmonicity` is the best-lag normalized
+ * autocorrelation peak, accumulated for every frame in which a lag was found
+ * (`v2Dsp.ts`), so it is ungated and spans its full [0, 1] range. The derived
+ * YIN/CMNDF `pitchConfidence` is acceptance-gated — it exists only for frames
+ * whose CMNDF dip passed `pitchCmndfThreshold` — so its usable range is the
+ * truncated (0.7, 1]. It still measures real voicing and is kept, but only as a
+ * secondary cue. `spectralFlatness` is deliberately NOT part of `tonality`:
+ * its normalization range is still the uncalibrated `{lo: 0, hi: 1}` of
+ * `noisiness`, which no real-audio value approaches, so an inverted term would
+ * be a near-constant ~1.0 rather than a discriminator. Recalibrating it is out
+ * of scope here so that this change stays isolated on the tonality input.
  */
 export function computeSoundCharacter(f: AudioFeaturesV2): SoundCharacter {
   const brightness = weightedMean(
@@ -118,7 +131,14 @@ export function computeSoundCharacter(f: AudioFeaturesV2): SoundCharacter {
     [0.5, 0.3, 0.2],
   );
   const duration = f.durationSec === null ? null : logNormalize(f.durationSec, RANGES.durationSec.lo, RANGES.durationSec.hi);
-  const tonality = weightedMean([f.pitchConfidence, f.harmonicity], [0.6, 0.4]);
+  // Tonality = degree of acoustic periodicity, measured on the UNGATED
+  // normalized-autocorrelation peak (`harmonicity`). `pitchConfidence` only
+  // corroborates it at a low weight: it is `1 - bestCm` and is recorded solely
+  // for frames that already passed `bestCm < pitchCmndfThreshold` (0.3), so any
+  // value it HAS is > 0.7 by construction. Weighting it at 0.6 therefore planted
+  // an artificial tonality floor of 0.42 on every record that had a detected
+  // pitch, which compressed the "Noisy <-> Tonal" axis into its right half.
+  const tonality = weightedMean([f.harmonicity, f.pitchConfidence], [0.8, 0.2]);
   const flat = norm(f.spectralFlatness, RANGES.flatness);
   const noiseInv = f.harmonicity === null ? null : 1 - f.harmonicity;
   const noisiness = weightedMean(

@@ -98,6 +98,74 @@ describe("SoundCharacter calibration on DSP-extracted corpus (STEP21)", () => {
     it("a percussive noise hit is nearly as noisy as white noise", () => {
       expect(C("percussiveNoiseHit").noisiness as number).toBeGreaterThan(0.8);
     });
+
+    describe("tonality: DSP periodicity semantics (STEP88)", () => {
+      const t = (n: string) => C(n).tonality as number;
+
+      it("a pure tone is far more tonal than broadband noise", () => {
+        expect(t("pureTone440")).toBeGreaterThan(t("whiteNoise"));
+      });
+
+      it("a pure tone is far more tonal than a percussive noise hit", () => {
+        expect(t("pureTone440")).toBeGreaterThan(t("percussiveNoiseHit"));
+      });
+
+      it("harmonic and clearly tonal material stays high", () => {
+        for (const n of ["pureTone440", "lowSine110", "highSine2000", "sustainedTone", "detunedHarmonic", "bellLike", "lowThump", "highThump"]) {
+          expect(t(n), n).toBeGreaterThan(0.7);
+        }
+      });
+
+      it("noise-like and hi-hat / transient material stays low", () => {
+        for (const n of ["whiteNoise", "percussiveNoiseHit", "impulse"]) {
+          expect(t(n), n).toBeLessThan(0.3);
+        }
+      });
+
+      it("a missing pitch does NOT imply high tonality: it falls back to harmonicity", () => {
+        // On this DSP corpus whiteNoise / percussiveNoiseHit / impulse are
+        // genuinely unvoiced, so `pitchConfidence` is null for them. Their
+        // tonality must collapse onto the (low) autocorrelation periodicity
+        // measure instead of inheriting any "detected pitch" default.
+        for (const n of ["whiteNoise", "percussiveNoiseHit", "impulse"]) {
+          const f = analyzeCorpus(n, 44100);
+          expect(f.pitchConfidence, n).toBeNull();
+          expect(t(n), n).toBeCloseTo(f.harmonicity as number, 12);
+        }
+      });
+
+      it("STEP88 regression: a gated pitchConfidence can no longer plant a tonality floor", () => {
+        // pitchConfidence is recorded only for frames with bestCm < 0.3, so any
+        // value that exists is > 0.7. At the previous 0.6 weight that implied
+        // tonality >= 0.42 for every voiced record; at 0.2 the floor is 0.14 and
+        // a low harmonicity still dominates.
+        for (const n of ["pureTone440", "bellLike", "lowThump"]) {
+          const f = analyzeCorpus(n, 44100);
+          expect(f.pitchConfidence as number, n).toBeGreaterThan(0.7);
+          expect(t(n), n).toBeCloseTo(0.8 * (f.harmonicity as number) + 0.2 * (f.pitchConfidence as number), 12);
+        }
+        // harmonicity, not the gated confidence, decides the ordering.
+        expect(t("bellLike")).toBeGreaterThan(t("whiteNoise"));
+      });
+
+      it("tonality stays in [0,1] and the axis semantics Noisy <- Tonal are preserved", () => {
+        for (const n of [
+          "pureTone440", "lowSine110", "highSine2000", "whiteNoise", "pinkNoise",
+          "impulse", "shortClick", "sustainedTone", "percussiveNoiseHit", "bellLike",
+        ]) {
+          const v = C(n).tonality;
+          expect(Number.isFinite(v as number), n).toBe(true);
+          expect(v as number, n).toBeGreaterThanOrEqual(0);
+          expect(v as number, n).toBeLessThanOrEqual(1);
+        }
+        // every tone sits right of every noise-like source
+        for (const tone of ["pureTone440", "lowSine110", "highSine2000", "sustainedTone"]) {
+          for (const noise of ["whiteNoise", "pinkNoise", "percussiveNoiseHit", "impulse"]) {
+            expect(t(tone), `${tone} vs ${noise}`).toBeGreaterThan(t(noise));
+          }
+        }
+      });
+    });
   });
 
   describe("transient / dynamics", () => {

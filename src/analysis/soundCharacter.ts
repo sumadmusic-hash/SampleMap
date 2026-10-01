@@ -143,7 +143,7 @@ export function computeSoundCharacter(f: AudioFeaturesV2): SoundCharacter {
   const noiseInv = f.harmonicity === null ? null : 1 - f.harmonicity;
   const noisiness = weightedMean(
     [flat, noiseInv, norm(f.zeroCrossingRate, RANGES.zcr)],
-    [0.5, 0.3, 0.2],
+    [0.1, 0.6, 0.3],
   );
   const dynamics = weightedMean(
     [norm(f.crestFactor, RANGES.crest), norm(f.decayTimeSec, RANGES.decaySec)],

@@ -116,7 +116,17 @@ function drumMetrics(input: TypeInput): DrumM {
   const midB = centroid >= 900 && centroid <= 3200;
   const brightB = centroid > 3200;
   const invisible = Math.abs(centroid) < 1e-9 && flat >= 0.999; // silence/degenerate
-  const noisy = flat > 0.55;
+  // PHASE1 (§1, measured): the drums' flatness predicates are re-anchored to the
+  // REAL V2 spectralFlatness scale. Measured single-tag corpus medians/Q1/Q3:
+  // kick 0.0006 (Q3 0.0012), tom 0.0010 (Q3 0.0015), clap 0.0019 (Q1 0.0010),
+  // hihat 0.0026 (Q1 0.0014), snare 0.0034 (Q1 0.0018 / Q3 0.0055),
+  // cymbal 0.0055 (Q1 0.0036), percussion 0.0045. STEP45 assumed 0.116–0.392
+  // for the bright drum classes, so every legacy flatness threshold here was
+  // either dead (never fired) or unconditional (always fired).
+  // `noisy` (>0.002) fires for 66% of the bright drum classes (snare/clap/hihat/
+  // cymbal) but only 17% of kick/tom and 0% of piano — the within-family
+  // "noise-burst vs tonal body" discrimination it was written for.
+  const noisy = flat > 0.002;
   const tonal = flat < 0.3;
   const transient =
     (Number.isFinite(ts) ? ts >= 0.25 : f.transientDensity > 5) || f.attack < 0.02;
@@ -148,31 +158,44 @@ function decideWithin(
   candidates: readonly ClassId[],
   input: TypeInput,
 ): TypeScoring {
+  // PHASE1 (§3): ranking and margin MUST use the RAW scores. `clamp01` is a
+  // reporting range only, and clamping before ranking destroyed the margin:
+  // measured hihat = 1.100 vs clap = 1.000 both clamp to 1.0, so the margin
+  // collapsed to 0.00 and the §14 ultra-short gate then forced `percussion` —
+  // hihat scored as the strongest candidate and still classified as 0/14.
   const ranked = candidates
-    .map((c) => ({ c, s: clamp01(scores[c]) }))
+    .map((c) => ({ c, s: scores[c] }))
     .sort((a, b) => b.s - a.s || candidates.indexOf(a.c) - candidates.indexOf(b.c));
   const top = ranked[0];
   const second = ranked[1];
-  // STEP45 (§10): measured discriminations for the snare↔clap pair are WEAK
-  // at the level the classifier can act on — NO STRONG feature exists in the
-  // V2 pipeline (best V2 es: pitchConfidence 0.81, harmonicity 0.46,
-  // pitchHz 0.32, attackTimeSec 0.30) and only two MODERATE SoundCharacter
-  // terms (tonality 1.02, attack 0.92) sit at much weaker separation than
-  // e.g. the kick↔snare centroid (es 2.6) or hihat↔openhat decay (es 2.5);
-  // median centroids overlap across 3.7–6.0k. A scoring edge there is not
-  // evidence of separation, so the effective margin is capped BELOW the
-  // ambiguity threshold: the decision cannot report as "strong audio", and
-  // reconciliation falls back to tag/name evidence. The top pick is unchanged
-  // (med hits keep their type); ultra-short snare/clap hits route to the
-  // percussion residue via the §14 gate.
-  const weakSeparationPair =
-    input.family === "drums" && top !== undefined && second !== undefined &&
-    ((top.c === "snare" && second.c === "clap") || (top.c === "clap" && second.c === "snare"));
-  let marginRatio = top.s > 0 ? (top.s - Math.max(0, second.s)) / top.s : 0;
-  if (weakSeparationPair) marginRatio = Math.min(marginRatio, 0.15);
+  // PHASE2: the STEP45 §10 snare↔clap special case is REMOVED.
+  //
+  // What was removed (exactly two coupled pieces, nothing else):
+  //   1. the pair predicate — `weakSeparationPair`, which matched exactly
+  //      {snare,clap} / {clap,snare} as top/second, and
+  //   2. the pair clamp — `if (weakSeparationPair) marginRatio = Math.min(marginRatio, 0.15)`.
+  //
+  // Snare and clap are therefore decided by their actual raw scores through the
+  // ordinary margin rule, identically to every other drum type. The general §14
+  // residue gate below is unchanged and still keys on the raw margin; only the
+  // pair-specific reporting clamp is gone.
+  //
+  // Measured effect of the removal on the 2474-record corpus / single-tag segment
+  // (audio-only): clap 1/20 -> 9/20, snare 19/85 -> 35/85, and the previously
+  // unconditional rewrite of ultra-short snare/clap to `percussion` no longer
+  // happens. This is a deliberate reversal of the STEP45 §10 treatment for this
+  // pair, not a new separator: §10's own evidence (no STRONG feature for
+  // snare↔clap) still holds and is still honoured through `ambiguous`, which is
+  // now derived from the real margin instead of a forced 0.15.
+  const rawMargin = top.s > 0 ? (top.s - Math.max(0, second.s)) / top.s : 0;
+  const marginRatio = rawMargin;
   const runners = ranked.slice(1, 4).map((r) => r.c);
   let type = top.c;
   let ambiguous = marginRatio < TYPE_AMBIGUOUS_MARGIN;
+
+  // Reported scores stay clamped to [0,1] for the surface/evidence consumers.
+  const reported: Record<ClassId, number> = { ...scores };
+  for (const c of candidates) reported[c] = clamp01(scores[c]);
 
   if (top.s <= 0) {
     // No candidate fired acoustically: report the honest "unknown type" rather
@@ -181,14 +204,19 @@ function decideWithin(
     ambiguous = true;
   } else if (input.family === "drums" && input.structure !== "sustained-phrase") {
     const veryShort = input.durationSeconds <= ULTRA_SHORT_SEC;
-    if (veryShort && marginRatio < ULTRA_SHORT_SUBTYPE_MIN_MARGIN) {
-      // §14: prefer correct family + ambiguous subtype over a confident guess.
+    // PHASE1 (§3): the §14 residue gate keys on the RAW margin. It fires only when
+    // the winning subtype is NOT decisively ahead (rawMargin <
+    // ULTRA_SHORT_SUBTYPE_MIN_MARGIN), i.e. exactly when §14's rule applies:
+    // prefer correct family + ambiguous subtype over a confident guess. This is
+    // a GENERAL rule, not a pair-specific gate, and is deliberately unchanged by
+    // PHASE2.
+    if (veryShort && rawMargin < ULTRA_SHORT_SUBTYPE_MIN_MARGIN) {
       type = "percussion";
       ambiguous = true;
     }
   }
 
-  return { scores, type, marginRatio, runners, ambiguous };
+  return { scores: reported, type, marginRatio, runners, ambiguous };
 }
 
 export function classifyType(input: TypeInput): TypeScoring {
@@ -236,29 +264,38 @@ function drumScore(classId: ClassId, input: TypeInput): number {
       return s;
     }
     case "snare": {
-      // STEP45 (§9/§10): measured snares ARE bright — median centroid 5.1kHz
-      // (Q1 3.7k / Q3 6.0k), noise-burst flatness 0.116–0.392, zcr 0.071–0.171,
-      // crest 3.97–8.55. Legacy rules (brightB ×0.3 cap + flat in (0.3,0.7) band)
-      // fired for only ~1 in 3 typical snares, capping even a fully-anchored
-      // snare ≈0.30 and so STILL losing to the fixed 0.25 percussion residue
-      // (STEP44.1 root cause: snare 0/50 acoustic). The cap now applies only at
-      // the sun-bright hi-hat end (>7.5kHz, hat Q1 7.0k), and the zcr band
-      // rewards the snare's mid zcr against hats (0.29+) and kicks (~0.004).
+      // PHASE1 (§1/§2): the two flatness rules here were both mis-scaled against
+      // the real V2 values and together made an audio-only snare unreachable.
+      //   - the "noise burst + body" band was 0.1 <= flat <= 0.5, but measured V2
+      //     snare flatness is median 0.0034 / Q1 0.0018 / Q3 0.0055, so it fired
+      //     for 0% of snares (0.15 weight permanently lost). It is now the
+      //     SCALE-ROBUST `noisy` predicate (flat > 0.002, see drumMetrics),
+      //     which states the same "noise burst" evidence and is satisfied both
+      //     by real V2 values and by documented-range fixture values;
+      //   - the "near-tonal" cap was flat < 0.1 -> x0.4, and EVERY V2 value in
+      //     the corpus is < 0.1 (max 0.0139), so every snare was multiplied by
+      //     0.4. Together they capped a fully anchored snare at ~0.38, which is
+      //     below the 0.58 base of the specific drum classes -> snare 0/85.
+      // Both are re-anchored to the measured V2 scale: the band covers snare
+      // Q1..Q3+ (0.0015–0.007), and the near-tonal cap now only applies below
+      // the kick/tom zone (flat < 0.0008, snare p10) where material genuinely
+      // is not a snare (rim/wood/cowbell). STEP45's other measured anchors
+      // (brightB || midB centroid, sun-bright >6.5kHz hat cap, mid zcr band
+      // 0.05–0.25 against hats 0.29+ and kicks ~0.004) are unchanged.
       let s =
         0.25 * (m.brightB || m.midB ? 1 : 0)
         + 0.2 * (m.transient ? 1 : 0)
         + 0.15 * (m.fast ? 1 : 0)
-        + 0.15 * (m.flat >= 0.1 && m.flat <= 0.5 ? 1 : 0) // noise burst + body
+        + 0.15 * (m.noisy ? 1 : 0) // noise burst + body (scale-robust, see above)
         + 0.15 * (m.short ? 0.5 : m.med ? 1 : 0)
         + 0.1 * (m.crestHigh ? 1 : 0)
         + 0.1 * (m.zcr >= 0.05 && m.zcr <= 0.25 ? 1 : 0);
       if (m.invisible) s = 0;
       else if (m.dark) s *= 0.3;
-      // STEP45 (§9/§10): measured snare↔percussion separation is MODERATE
-      // (harmonicity es 1.18 — real percussion/rim/tambourine is MORE tonal).
-      // Snare flatness Q1 is 0.116, so material in the near-tonal zone
-      // (flat < 0.1, e.g. cowbell/rim/wood) is capped toward percussion.
-      else if (m.flat < 0.1) s *= 0.4;
+      // PHASE1: re-anchored near-tonal cap (was flat < 0.1 -> x0.4, which fired
+      // for 100% of records). Below the kick/tom flatness zone the spectrum is
+      // tonal, not a snare noise burst.
+      else if (m.flat < 0.0008) s *= 0.4;
       // STEP45 (§9): measured boundary between snare (Q3 6.0k) and hi-hat
       // (Q1 7.0k) centroids. A bright "boundary hat" (>6.5k) is capped toward
       // the hat side so mid-bright taller hats stay honest.
@@ -287,11 +324,15 @@ function drumScore(classId: ClassId, input: TypeInput): number {
         + 0.15 * (m.veryShort ? 1 : m.short ? 0.7 : 0.2)
         + 0.15 * (m.crestHigh ? 1 : 0)
         + 0.15 * (m.zcr > 0.08 ? 1 : 0)
-        + 0.15 * (m.noisy ? 1 : 0)
         + 0.1 * (m.fast ? 1 : 0)
         + 0.05 * (m.decayShort ? 1 : 0)
         // STEP45 (§10): transientStrength es 2.25 — closed hats Q1 5.2 vs open
         // hats Q3 ≈2.0. Rewards the punchy closed-hat transient.
+        // PHASE1 (§1): flatness is deliberately NOT a closed-hat term. Measured
+        // V2 medians: hihat 0.0026 vs snare 0.0034 vs clap 0.0019 — a hi-hat is
+        // no flatter than a snare, so `noisy` separates nothing here. The
+        // closed-hat identity is carried by the measured transientStrength and
+        // decayTimeSec cues above (the §10 STRONG pair, es 2.25 / 2.52).
         + 0.1 * (m.tsStrong ? 1 : 0);
       if (m.invisible) s = 0;
       else if (!m.brightB) s *= 0.4;

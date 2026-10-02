@@ -56,10 +56,29 @@ const nan = (v: number | null | undefined): number =>
 const W = {
   drums: {
     transient: 0.35, // strong transient onset (V2 transientStrength or V1 density)
-    crest: 0.2, // peak-to-rms crest (V2 or derived)
+    // PHASE1 (§4, measured on the 2474-record corpus, single-tag records):
+    // crestFactor does NOT separate drums from musical material across the
+    // family boundary — musical medians sit at the same level or higher
+    // (piano 5.82, guitar 6.33, keys 5.95, vocal 6.31) than the loudest drum
+    // classes, and it is INVERTED for kicks (kick median 2.94 vs musical 5.57).
+    // A plain "crest >= 5" bonus therefore rewards musical material and
+    // penalises kicks, so its family weight is halved and the measured
+    // kick-side counterpart (crest < 4.5, i.e. a sustained moderate-level body
+    // instead of a one-sample spike) carries the rest.
+    crest: 0.1, // peak-to-rms crest high (V2 or derived)
+    crestCompact: 0.1, // crest < 4.5 — compact body, measured kick zone (Q3 4.26)
     fastAttack: 0.15, // near-instant attack
     hitDuration: 0.15, // short one-hit envelope
+    // PHASE1 (§4): the CONJUNCTION short-envelope AND fast-onset is the strongest
+    // measured one-shot indicator available: dur <= 0.75s AND attack <= 0.05s
+    // fires for 69% of kick-tagged records but only 3% of musical-tagged ones
+    // (precision 96%). Either half alone is far weaker (dur <= 0.75 alone:
+    // 79% vs 5%; attack <= 0.05 alone: 82% vs 24%), so the drums family needs
+    // this measured conjunction — without it real kicks lose the family race to
+    // the musical harmonic/pitch baseline (drums 0.70 vs musical 0.72).
+    hitShape: 0.2, // short envelope AND fast onset = a one-shot hit
     lowMidSpectrum: 0.15, // drums live in the low/mid band
+    darkSpectrum: 0.15, // measured kick/tom zone: centroid < 250Hz (kick 51% vs musical 8%)
     hint: 0.15, // drum ontology / name / tag evidence
     longPhraseGate: 0.25, // a >4s one-shot phrase is NOT a drum hit
     tonalGate: 0.2, // sustained pitched tones are not drums
@@ -141,12 +160,21 @@ function indicators(
   const lowMid = centroid < 3200 && centroid >= 100;
   const midHigh = centroid >= 250 && centroid <= 6000;
   const wideBand = bandwidth > 3000;
+  // PHASE1 (§4): measured kick/tom dark zone. centroid < 250Hz on its own is NOT a
+  // family separator — it fires for 69/134 kicks but also 43/151 bass, because a
+  // bass hit is just as dark. It is therefore only a BONUS term here; the family
+  // decision is carried by the `hitShape` conjunction above (93/134 kicks vs
+  // 7/151 bass, 0/29 piano, 0/65 guitar, 0/39 keys).
+  const darkSpectrum = centroid < 250;
+  // PHASE1 (§4): compact-body counterpart to `crestHigh`, see W.drums.crest.
+  const crestCompact = Number.isFinite(crest) && crest < 4.5;
 
   return {
     transient,
     hasTransient,
     fastAttack,
     crestHigh,
+    crestCompact,
     hasPitch,
     hasHarmonic,
     hasInharmonic,
@@ -155,10 +183,12 @@ function indicators(
     flatNoisy,
     lowMid,
     midHigh,
+    darkSpectrum,
     centroid,
     bandwidth,
     wideBand,
     flux,
+    attackSec: Number.isFinite(atk2) ? atk2 : f.attack,
     duration: f.duration,
   };
 }
@@ -170,12 +200,19 @@ export function scoreFamilies(input: FamilyInput): FamilyScoring {
   const dur = durationSeconds;
 
   // ---- drums ------------------------------------------------------------
+  // PHASE1 (§4): short envelope AND fast onset, in SECONDS (V1 `attack` and V2
+  // `attackTimeSec` share the same unit). The conjunction is the measured
+  // one-shot signal; either half on its own is much weaker.
+  const hitShape = dur <= 0.75 && I.attackSec <= 0.05;
   let drums =
     W.drums.transient * (I.hasTransient ? 1 : 0)
     + W.drums.crest * (I.crestHigh ? 1 : 0)
+    + W.drums.crestCompact * (I.crestCompact ? 1 : 0)
     + W.drums.fastAttack * (I.fastAttack ? 1 : 0)
     + W.drums.hitDuration * (dur < 0.75 ? 1 : 0)
+    + W.drums.hitShape * (hitShape ? 1 : 0)
     + W.drums.lowMidSpectrum * (I.lowMid ? 1 : 0)
+    + W.drums.darkSpectrum * (I.darkSpectrum ? 1 : 0)
     + W.drums.hint * (hints.drums ? 1 : 0);
   if (structure === "sustained-phrase") {
     // A >4s one-shot is a full phrase/track — its hit-like onset does not make

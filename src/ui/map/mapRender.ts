@@ -7,6 +7,7 @@ import {
   MapCamera,
   MapPoint,
   ScreenPosition,
+  cameraToViewportBBox,
   defaultMapCamera,
   globalMapPoints,
   mapPoints,
@@ -181,8 +182,12 @@ export function renderSampleMap(
   const pinned: string[] = [];
   if (opts.selectedSampleId !== undefined) pinned.push(opts.selectedSampleId);
   if (opts.selectedSampleIds) pinned.push(...opts.selectedSampleIds);
+  // STEP90 — hierarchical selection. The viewport is passed so the quadtree is
+  // evaluated only for the cells on screen; selection is otherwise independent
+  // of the camera, which is what makes panning a pure membership change.
   const displayed = selectDisplayedPoints(points, {
     zoom: camera.zoom,
+    bbox: cameraToViewportBBox(camera),
     keepSampleIds: pinned,
   });
 
@@ -312,6 +317,12 @@ export function renderSampleMap(
   // ---------------------------------------------------------------
   let dragging: DragState | undefined;
 
+  // STEP90 — the camera this surface last committed. Wheel bursts arrive much
+  // faster than a render, so successive steps must accumulate on this local
+  // view instead of each re-deriving from the camera captured at render time
+  // (which would drop every step but the last in a burst).
+  let view = camera;
+
   function hoverClear(): void {
     hideTooltip(tip);
     for (const el of content.querySelectorAll(".map-point-hovered")) {
@@ -376,7 +387,10 @@ export function renderSampleMap(
 
   const endDrag = (): void => {
     if (!dragging) return;
-    if (dragging.panning) opts.onCamera?.(dragging.lastCamera);
+    if (dragging.panning) {
+      view = dragging.lastCamera;
+      opts.onCamera?.(dragging.lastCamera);
+    }
     svg.style.cursor = "";
     dragging = undefined;
   };
@@ -390,7 +404,8 @@ export function renderSampleMap(
       e.preventDefault();
       const base = clientToBase(svg, { x: e.clientX, y: e.clientY });
       const factor = Math.exp(-e.deltaY * 0.0015);
-      opts.onCamera?.(zoomBy(camera, factor, base));
+      view = zoomBy(view, factor, base);
+      opts.onCamera?.(view);
       svg.style.cursor = "";
     },
     { passive: false },

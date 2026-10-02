@@ -1050,29 +1050,15 @@ function mapCountText(app: SampleMapApp): string {
   return `${m.total} samples · ${m.shown} shown`;
 }
 
-function renderMapPanel(app: SampleMapApp): HTMLElement {
-  const wrap = section(`Sample Map (${MAP_VERSION})`);
-  wrap.classList.add("map-panel-primary");
-
-  // Zoom controls (Step 15F §20): [−] [label] [+] [Reset].
-  const controls = el("div", "map-zoom-controls");
-  const minus = button("map-zoom-btn", "−");
-  minus.setAttribute("data-testid", "map-zoom-out");
-  minus.setAttribute("aria-label", "Zoom out");
-  minus.onclick = () => app.zoomMapBy(1 / ZOOM_STEP);
-  const label = el("span", "map-zoom-label", `${Math.round(app.mapCamera.zoom * 100)}%`);
-  label.setAttribute("data-testid", "map-zoom-label");
-  const plus = button("map-zoom-btn", "+");
-  plus.setAttribute("data-testid", "map-zoom-in");
-  plus.setAttribute("aria-label", "Zoom in");
-  plus.onclick = () => app.zoomMapBy(ZOOM_STEP);
-  const reset = button("map-reset-btn", "Reset View");
-  reset.setAttribute("data-testid", "map-zoom-reset");
-  reset.onclick = () => app.resetMapView();
-  controls.append(minus, label, plus, reset);
-
-  const host = el("div", "sample-map-host");
-  host.setAttribute("data-testid", "sample-map-host");
+/**
+ * STEP90 — paint the map into its host element.
+ *
+ * Extracted from `renderMapPanel` so a camera-only change can repaint exactly
+ * this piece without rebuilding the rest of the shell (`renderMapOnly`). It is
+ * the single place that calls `renderSampleMap`, so the full and the cheap path
+ * can never drift apart.
+ */
+function paintSampleMap(host: HTMLElement, app: SampleMapApp): void {
   // Visibility projection: the searched records filtered by the two INDEPENDENT
   // toggles (union, deduplicated by sampleId). The searchable `results` list
   // itself is untouched, so every sample stays findable even while off the map.
@@ -1098,6 +1084,32 @@ function renderMapPanel(app: SampleMapApp): HTMLElement {
     // produced, so it can never disagree with what is on screen.
     onRendered: (info) => app.setMapRendered(info),
   });
+}
+
+function renderMapPanel(app: SampleMapApp): HTMLElement {
+  const wrap = section(`Sample Map (${MAP_VERSION})`);
+  wrap.classList.add("map-panel-primary");
+
+  // Zoom controls (Step 15F §20): [−] [label] [+] [Reset].
+  const controls = el("div", "map-zoom-controls");
+  const minus = button("map-zoom-btn", "−");
+  minus.setAttribute("data-testid", "map-zoom-out");
+  minus.setAttribute("aria-label", "Zoom out");
+  minus.onclick = () => app.zoomMapBy(1 / ZOOM_STEP);
+  const label = el("span", "map-zoom-label", `${Math.round(app.mapCamera.zoom * 100)}%`);
+  label.setAttribute("data-testid", "map-zoom-label");
+  const plus = button("map-zoom-btn", "+");
+  plus.setAttribute("data-testid", "map-zoom-in");
+  plus.setAttribute("aria-label", "Zoom in");
+  plus.onclick = () => app.zoomMapBy(ZOOM_STEP);
+  const reset = button("map-reset-btn", "Reset View");
+  reset.setAttribute("data-testid", "map-zoom-reset");
+  reset.onclick = () => app.resetMapView();
+  controls.append(minus, label, plus, reset);
+
+  const host = el("div", "sample-map-host");
+  host.setAttribute("data-testid", "sample-map-host");
+  paintSampleMap(host, app);
 
   // STEP85: the count line is appended AFTER the map render, so it is built
   // from the already-known pipeline numbers instead of the previous frame.
@@ -1126,6 +1138,51 @@ function renderMapPanel(app: SampleMapApp): HTMLElement {
     if (empty) (empty as HTMLElement).style.display = "none";
   }
   return wrap;
+}
+
+/**
+ * STEP90 — repaint only the map surface for a camera-only change.
+ *
+ * The camera affects the map (the points in view, the zoom label and the count
+ * derived from them) and nothing else, so a wheel/pan/zoom must not tear down
+ * and rebuild the entire shell (header, results, inspector, advanced drawer).
+ * This updates exactly the map host and the three map-scoped readouts, leaving
+ * every other node in place. Returns false when the map is not mounted yet, so
+ * the caller can fall back to a full render.
+ */
+function renderMapOnly(root: HTMLElement, app: SampleMapApp): boolean {
+  const host = root.querySelector<HTMLElement>("[data-testid='sample-map-host']");
+  if (!host) return false;
+
+  paintSampleMap(host, app);
+
+  // The first-use overlay lives OUTSIDE the host, so it survives the repaint;
+  // the freshly created empty-state node inside the host must be hidden again.
+  if (
+    shouldShowFirstUse(
+      app.results.length,
+      app.scan.status,
+      hasActiveSearch(app.searchState),
+    )
+  ) {
+    const empty = host.querySelector<HTMLElement>(".map-empty");
+    if (empty) empty.style.display = "none";
+  }
+
+  const label = root.querySelector<HTMLElement>("[data-testid='map-zoom-label']");
+  if (label) label.textContent = `${Math.round(app.mapCamera.zoom * 100)}%`;
+
+  const count = root.querySelector<HTMLElement>("[data-testid='map-count-line']");
+  if (count) count.textContent = mapCountText(app);
+
+  const globalState = root.querySelector<HTMLElement>(
+    "[data-testid='map-global-state']",
+  );
+  if (globalState) {
+    globalState.className = `map-global-state map-global-state-${app.globalMapState}`;
+    globalState.textContent = globalMapStateLabel(app.globalMapState);
+  }
+  return true;
 }
 
 /**
@@ -2743,9 +2800,47 @@ export function mountSampleMap(
   root: HTMLElement,
   deps: Omit<import("./app").SampleMapAppDeps, "onChange">,
 ): SampleMapApp {
+  // STEP90 — render scheduling.
+  //
+  // A camera-only change (wheel / pan / zoom) repaints just the map, and a burst
+  // of wheel events is coalesced into ONE frame. Every other state change still
+  // renders the full shell synchronously, so the rest of the UI keeps its
+  // existing timing guarantees.
+  let cameraFrame: number | undefined;
+  const cancelCameraFrame = (): void => {
+    if (cameraFrame !== undefined && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(cameraFrame);
+    }
+    cameraFrame = undefined;
+  };
+  const applyCameraOnly = (): void => {
+    // Fall back to a full render if the map host is not mounted yet.
+    if (!renderMapOnly(root, app)) renderApp(root, app);
+  };
+  const scheduleCameraOnly = (): void => {
+    if (typeof requestAnimationFrame !== "function") {
+      applyCameraOnly();
+      return;
+    }
+    if (cameraFrame !== undefined) return;
+    cameraFrame = requestAnimationFrame(() => {
+      cameraFrame = undefined;
+      applyCameraOnly();
+    });
+  };
+
   const app = new SampleMapApp({
     ...deps,
-    onChange: () => renderApp(root, app),
+    onChange: () => {
+      if (app.cameraOnlyRender) {
+        scheduleCameraOnly();
+        return;
+      }
+      // A real state change supersedes any pending camera repaint: cancel it and
+      // render the whole shell now, so a camera frame can never overwrite it.
+      cancelCameraFrame();
+      renderApp(root, app);
+    },
   });
 
   // Global shell shortcuts (spec §17.1 / §18):

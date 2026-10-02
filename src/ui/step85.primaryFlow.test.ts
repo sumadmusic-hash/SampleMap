@@ -132,15 +132,21 @@ describe("STEP85 — primary view is the map plus a compact sample panel", () =>
   });
 
   it("the count line is built from the CURRENT render, not the previous frame", () => {
-    // The renderer reports its numbers synchronously via onRendered, and the
-    // count line is appended after that call — so the values are already known.
-    const body = fn(renderSrc, "function renderMapPanel(");
-    const renderCall = body.indexOf("renderSampleMap(host");
-    const onRendered = body.indexOf("onRendered: (info) => app.setMapRendered(info)");
-    const countLine = body.indexOf("mapCountText(app)");
+    // STEP90 extracted the map paint into `paintSampleMap` (the single
+    // `renderSampleMap` call site), which reports its numbers synchronously via
+    // onRendered. `renderMapPanel` reads the count line only AFTER that paint,
+    // so the values are already known.
+    const paint = fn(renderSrc, "function paintSampleMap(");
+    const renderCall = paint.indexOf("renderSampleMap(host");
+    const onRendered = paint.indexOf("onRendered: (info) => app.setMapRendered(info)");
     expect(renderCall).toBeGreaterThan(-1);
     expect(onRendered).toBeGreaterThan(renderCall);
-    expect(countLine).toBeGreaterThan(onRendered);
+
+    const panel = fn(renderSrc, "function renderMapPanel(");
+    const paintCall = panel.indexOf("paintSampleMap(host, app)");
+    const countLine = panel.indexOf("mapCountText(app)");
+    expect(paintCall).toBeGreaterThan(-1);
+    expect(countLine).toBeGreaterThan(paintCall);
   });
 });
 

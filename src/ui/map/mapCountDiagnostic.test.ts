@@ -18,7 +18,7 @@ import { resolveMapVisibility, type VisibilityToggles } from "./visibility";
  *     -> resolveMapVisibility()   (Global / My Samples toggles gate the points)
  *     -> mapPoints()              (content-identity dedup + position requirement)
  *     -> globalMapPoints() + mergeMapPoints()
- *     -> selectDisplayedPoints()  (STEP86: hard display limit, no clustering)
+ *     -> selectDisplayedPoints()  (STEP86/90: hard display limit, quadtree LOD)
  *     -> one SVG circle per displayed point
  *
  * Nothing here changes behaviour: every assertion pins what the pipeline
@@ -150,15 +150,17 @@ function smallGlobalPool(records: readonly SampleIndexRecord[], n: number): Glob
 const BOTH_ON: VisibilityToggles = { global: true, mine: true };
 
 describe("map count : records -> points -> displayed", () => {
-  it("1. every eligible point is either DEDUPED or DRAWN, and the display limit is the only cut", () => {
+  it("1. every eligible point is either DEDUPED, LOD-collapsed or DRAWN, and no dot is invented", () => {
     const { records } = corpus(1200);
     const visible = resolveMapVisibility(records, undefined, BOTH_ON, AUTH_USER).visibleRecords;
     const points = mapPoints(visible);
     const displayed = selectDisplayedPoints(points);
 
-    // Above the maximum the map shows exactly the limit — and every shown point
-    // is one of the pipeline's own points, at its own coordinate.
-    expect(displayed).toHaveLength(MAX_DISPLAYED_POINTS);
+    // Above the maximum the map is thinned by the quadtree LOD: it shows UP TO
+    // the hard limit (one dot per occupied cell), never more. Every drawn dot is
+    // still one of the pipeline's own points, at its own coordinate.
+    expect(displayed.length).toBeGreaterThan(0);
+    expect(displayed.length).toBeLessThanOrEqual(MAX_DISPLAYED_POINTS);
     const pointIds = new Set(points.map((p) => p.sampleId));
     for (const d of displayed) expect(pointIds.has(d.sampleId)).toBe(true);
 
@@ -266,16 +268,18 @@ describe("map count : records -> points -> displayed", () => {
     expect(new Set(displayed.map((p) => p.sampleId))).toEqual(new Set(points.map((p) => p.sampleId)));
   });
 
-  it("6. above the maximum the map shows the limit at EVERY zoom, and zoom never invents a point", () => {
+  it("6. above the maximum the map is thinned to the limit at EVERY zoom, and zoom never invents a point", () => {
     const { records } = corpus(1200);
     const visible = resolveMapVisibility(records, undefined, BOTH_ON, AUTH_USER).visibleRecords;
     const points = mapPoints(visible);
     expect(points.length).toBeGreaterThan(MAX_DISPLAYED_POINTS);
 
+    const selections: Set<string>[] = [];
     for (const zoom of [1, 2, 4, 8]) {
       const shown = selectDisplayedPoints(points, { zoom });
-      // The limit is HARD: never fewer (nothing else was dropped), never more.
-      expect(shown).toHaveLength(MAX_DISPLAYED_POINTS);
+      // The limit is HARD: the LOD thins the map to UP TO the budget, never more.
+      expect(shown.length).toBeGreaterThan(0);
+      expect(shown.length).toBeLessThanOrEqual(MAX_DISPLAYED_POINTS);
       // Every drawn point exists in the pipeline, at the pipeline's coordinate.
       const byId = new Map(points.map((p) => [p.sampleId, p]));
       for (const s of shown) {
@@ -283,6 +287,13 @@ describe("map count : records -> points -> displayed", () => {
         expect(s.x).toBe(byId.get(s.sampleId)!.x);
         expect(s.y).toBe(byId.get(s.sampleId)!.y);
       }
+      selections.push(new Set(shown.map((p) => p.sampleId)));
+    }
+
+    // Zoom-in only ADDS detail: every point shown at a coarser zoom is still
+    // shown at the next finer one (no reshuffling — the STEP90 stability rule).
+    for (let i = 1; i < selections.length; i++) {
+      for (const id of selections[i - 1]) expect(selections[i].has(id)).toBe(true);
     }
   });
 

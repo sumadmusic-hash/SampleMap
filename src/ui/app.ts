@@ -737,6 +737,14 @@ export class SampleMapApp {
   /** Step 15F: the map camera (zoom/pan). RUNTIME-ONLY — never persisted. */
   mapCamera: MapCamera = defaultMapCamera();
 
+  /**
+   * STEP90 — true only while a `notify()` originating from a camera-only change
+   * is running. The camera affects nothing but the map, so the mount layer reads
+   * this to repaint just the map instead of rebuilding the whole shell. It is
+   * reset immediately after `notify()` returns and is never persisted.
+   */
+  cameraOnlyRender = false;
+
   /** Step 16K: global map points from the worker /map endpoint. */
   globalPoints: GlobalMapPoint[] = [];
 
@@ -1518,8 +1526,20 @@ if (this.scanAborted) {
    * the view invariants (§6/§11).
    */
   setMapCamera(camera: MapCamera): void {
+    this.commitCamera(camera);
+  }
+
+  /**
+   * Commit a camera change and notify with the camera-only flag set. The flag
+   * lets the mount layer take the cheap map-only render path; it is cleared as
+   * soon as the synchronous render pass returns. Lives here (private) so every
+   * camera mutation shares exactly one notify + global-refresh sequence.
+   */
+  private commitCamera(camera: MapCamera): void {
     this.mapCamera = clampPan({ ...camera, zoom: clampZoom(camera.zoom) });
+    this.cameraOnlyRender = true;
     this.notify();
+    this.cameraOnlyRender = false;
     this.scheduleGlobalRefresh();
   }
 
@@ -1536,9 +1556,7 @@ if (this.scanAborted) {
 
   /** Restore the default full-map view (zoom 1, no pan). */
   resetMapView(): void {
-    this.mapCamera = defaultMapCamera();
-    this.notify();
-    this.scheduleGlobalRefresh();
+    this.commitCamera(defaultMapCamera());
   }
 
   // ------------------------------------------------------------------

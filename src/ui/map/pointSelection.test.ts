@@ -11,6 +11,7 @@ import {
   BASE_POINT_RADIUS_PX,
   MAX_ZOOM,
   MIN_ZOOM,
+  MIN_POINT_RADIUS_PX,
   pointRadius,
   SELECTED_POINT_SCALE,
 } from "./mapView";
@@ -284,15 +285,22 @@ describe("STEP90 — hierarchical LOD stability rules", () => {
     for (const p of zoomedOut) expect(finer.has(p.sampleId)).toBe(true);
   });
 
-  it("keeps the ON-SCREEN point size constant at every zoom", () => {
-    for (const zoom of [MIN_ZOOM, 1, 2, 4, MAX_ZOOM]) {
+  it("shrinks the ON-SCREEN point size as zoom increases, with a floor", () => {
+    let prev = pointRadius(MIN_ZOOM);
+    expect(prev).toBe(BASE_POINT_RADIUS_PX);
+    for (const zoom of [1, 2, 4, MAX_ZOOM]) {
+      // The renderer divides by zoom, the content group multiplies by zoom, so
+      // the ON-SCREEN radius is exactly pointRadius(zoom).
       const onScreen = (pointRadius(zoom) / zoom) * zoom;
-      expect(onScreen).toBeCloseTo(BASE_POINT_RADIUS_PX, 12);
-      expect((pointRadius(zoom, true) / zoom) * zoom).toBeCloseTo(
-        BASE_POINT_RADIUS_PX * SELECTED_POINT_SCALE,
-        12,
-      );
+      expect(onScreen).toBe(pointRadius(zoom));
+      expect(onScreen).toBeLessThanOrEqual(prev + 1e-12);
+      expect(onScreen).toBeGreaterThanOrEqual(MIN_POINT_RADIUS_PX);
+      prev = onScreen;
     }
+    expect((pointRadius(MAX_ZOOM, true) / MAX_ZOOM) * MAX_ZOOM).toBeCloseTo(
+      pointRadius(MAX_ZOOM) * SELECTED_POINT_SCALE,
+      12,
+    );
   });
 });
 

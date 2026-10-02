@@ -140,37 +140,40 @@ export const DRAG_THRESHOLD_PX = 4;
 /** Max pointer distance (base px) from a point for hit-testing / hover. */
 export const POINT_HIT_RADIUS_PX = 13;
 
-/** FINAL_UI_UX §8.1 + STEP38 §27 (CORRECTED): base point radius, SCREEN-space,
- *  exactly 2.5px at every zoom level — never scales with zoom.
+/** STEP91: base point radius, SCREEN-space, at 100% zoom (the largest size).
  *  STEP76: reduced from 5px so 800+ point clouds stay separable. Selection and
  *  focus remain unmistakable — they additionally carry `stroke-width: 2.5` and the
  *  selection glow from samplemap.css, independent of this radius. Hit-testing is
  *  governed separately by POINT_HIT_RADIUS_PX, which is unchanged. */
 export const BASE_POINT_RADIUS_PX = 2.5;
+/** STEP91: the on-screen radius never drops below this, however far the user
+ *  zooms in — a point must always stay a visible, clickable dot. */
+export const MIN_POINT_RADIUS_PX = 1.25;
 /** FINAL_UI_UX §8.2: selected/focused radius = base × this scale. */
 export const SELECTED_POINT_SCALE = 1.35;
 
 /**
- * FINAL_UI_UX §8.1 + STEP38 §27 (CORRECTED): base point radius is a SCREEN-SPACE
- * constant — **exactly 5px at every zoom level**. Zoom changes spatial
- * separation ONLY; sample-point visual size never changes in screen pixels.
+ * STEP91 — zoom changes ONLY how large the SAME points are drawn; it never adds,
+ * removes or swaps a sample (that membership is decided entirely upstream and is
+ * zoom-invariant). `pointRadius(zoom)` is therefore the desired ON-SCREEN radius
+ * at that zoom: it decreases monotonically from `BASE_POINT_RADIUS_PX` at 100%
+ * down to `MIN_POINT_RADIUS_PX` at `MAX_ZOOM`, interpolated on a log2 axis so the
+ * change is even across the 1→2→4→8 steps. Zooming back out grows the dots.
  *
- * `pointRadius(zoom, emphasized)` therefore returns a zoom-INDEPENDENT value:
- * the `zoom` argument is accepted for call-site compatibility but is NOT part
- * of the radius math (the caller — `mapRender` — divides the base-unit SVG
- * radius by the camera zoom so the scaled content group still resolves to this
- * constant on-screen radius). The historical `max(4, 5/zoom)` floor is gone:
- * the on-screen radius no longer grows past 5px when zooming in.
+ * The caller — `mapRender` — draws the base-unit SVG radius as
+ * `(screen radius ÷ group zoom)` so that, after the content group's scale
+ * transform, the ON-SCREEN radius is exactly this value at every zoom.
  *
  * `emphasized` (focused / batch-selected / playing, §8.2) uses a larger but
- * equally zoom-INDEPENDENT screen-space radius (base × SELECTED_POINT_SCALE).
- * Pure presentation — never touches positions, `mapPosition` or audio data.
+ * equally zoom-coupled screen-space radius (× SELECTED_POINT_SCALE). Pure
+ * presentation — never touches positions, `mapPosition` or audio data.
  */
 export function pointRadius(zoom: number, emphasized = false): number {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  void zoom;
-  const base = BASE_POINT_RADIUS_PX;
-  return emphasized ? base * SELECTED_POINT_SCALE : base;
+  const z = clampZoom(Number.isFinite(zoom) ? zoom : DEFAULT_ZOOM);
+  const t = Math.log2(z) / Math.log2(MAX_ZOOM);
+  const rest =
+    BASE_POINT_RADIUS_PX + (MIN_POINT_RADIUS_PX - BASE_POINT_RADIUS_PX) * t;
+  return emphasized ? rest * SELECTED_POINT_SCALE : rest;
 }
 
 /**

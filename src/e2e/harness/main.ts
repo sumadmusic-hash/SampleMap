@@ -37,7 +37,6 @@ import {
   mapPoints,
   mergeMapPoints,
 } from "../../ui/map/mapView";
-import { MAX_DISPLAYED_POINTS, selectDisplayedPoints } from "../../ui/map/pointSelection";
 import { visibleGlobalPoints } from "../../ui/map/visibility";
 import {
   acceptUsageAndEnqueue,
@@ -723,12 +722,12 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
         current: () => GlobalMapPoint[];
       };
       /**
-       * READ-ONLY inspection of the PRODUCT display limit (test-only).
+       * READ-ONLY inspection of the PRODUCT map selection (test-only).
        *
-       * Re-runs the exact renderer pipeline for the app's current state
-       * (`visibleMapRecords` + visible global points -> merge -> display limit)
-       * and returns which sample ids the map would draw, so a stress run can
-       * compare the real DOM against the product result.
+       * Re-runs the renderer pipeline for the app's current state
+       * (`visibleMapRecords` + visible global points -> merge) and returns which
+       * sample ids the map draws. STEP91: the set is zoom-independent — every
+       * merged point is drawn at every zoom.
        *
        * It changes nothing: no state is written, nothing is re-rendered.
        */
@@ -1115,8 +1114,12 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
         current: (): GlobalMapPoint[] => app.globalPoints,
       },
       display: {
-        inspect: (zoom: number) => {
-          // Mirrors mapRender.ts -> renderSampleMap() exactly.
+        /**
+         * STEP91 — the map draws EVERY merged point at EVERY zoom (zoom only
+         * changes the dot size), so the product selection is zoom-independent.
+         * Mirrors mapRender.ts -> renderSampleMap() exactly.
+         */
+        inspect: (_zoom: number) => {
           const local = mapPoints(app.visibleMapRecords);
           // render.ts passes the visible globals; the renderer converts them
           // with globalMapPoints() before merging. Same order, same functions.
@@ -1124,15 +1127,11 @@ const fetchPage: PageFetcher = async ({ pageSize, pageToken, filter }) => {
             visibleGlobalPoints(app.globalPoints, app.visibility),
           );
           const merged = mergeMapPoints(local, globals);
-          // The same pin set the renderer uses: focus + batch selection.
-          const keep = [...app.selectedSampleIds];
-          if (app.focusedSampleId) keep.push(app.focusedSampleId);
-          const displayed = selectDisplayedPoints(merged, { zoom, keepSampleIds: keep });
           return {
             merged: merged.length,
-            shown: displayed.length,
-            limit: MAX_DISPLAYED_POINTS,
-            sampleIds: displayed.map((p) => p.sampleId),
+            shown: merged.length,
+            limit: merged.length,
+            sampleIds: merged.map((p) => p.sampleId),
           };
         },
       },

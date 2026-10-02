@@ -11,7 +11,7 @@ import { startIndexing } from "./support/startIndexing";
  * browser the previously unit-only guarantees:
  *
  *   - zoom never rewrites stored point coordinates (cx/cy attrs stay identical);
- *   - point on-screen radius is a SCREEN-space constant (zoom-independent);
+ *   - zoom draws the SAME points, only smaller (zoom-coupled size, floored);
  *   - class filtering never moves surviving points and never leaves stale points;
  *   - clicking a point at zoom>1 still focuses correctly;
  *   - search + class filter compose; Clear restores the identical full set;
@@ -54,7 +54,8 @@ const resultIds = (p: Page) =>
  * Screen-space FILL diameter (px) of a map point at the current zoom,
  * computed from the circle's `r` attribute and the effective CTM scale —
  * decoupled from the CSS stroke (a scaled hairline that is presentation-only
- * and intentionally excluded from the zoom-invariant size contract).
+ * and intentionally excluded from the size contract). STEP91: the fill shrinks
+ * as the user zooms in, so this is measured at several zooms to compare.
  */
 const circleScreenFillWidthPx = (p: Page, id: string): Promise<number | null> =>
   p.evaluate((sampleId) => {
@@ -91,17 +92,18 @@ test.describe.serial("STEP50 map usability (offline harness fixtures)", () => {
     await expect(page.locator("[data-testid^='map-point-']")).toHaveCount(4);
     const base = await positionsOf(page, ALL);
     expect(Object.values(base).every((p) => p[0] !== "gone")).toBe(true);
-    // on-screen point fill diameter at zoom×1 ≈ 5px (r=2.5px screen-space constant,
-    // STEP76: reduced from r=5px so 800+ point clouds stay separable). The SVG is
-    // laid out at a container scale of ~0.775, so the window is the same relative
-    // 0.7x–1.3x band the former r=5px check used (7–13px around a 10px diameter).
+    // on-screen point fill diameter at zoom×1 ≈ 5px (r=2.5px screen-space at 100%,
+    // STEP76: reduced from r=5px so 800+ point clouds stay separable; STEP91:
+    // this is the largest size, zoom only shrinks it). The SVG is laid out at a
+    // container scale of ~0.775, so the window is the same relative 0.7x–1.3x
+    // band the former r=5px check used (7–13px around a 10px diameter).
     const w = await circleScreenFillWidthPx(page, KICK);
     expect(w).not.toBeNull();
     expect(w!).toBeGreaterThan(3.5);
     expect(w!).toBeLessThan(6.5);
   });
 
-  test("50M-02 zoom 1→2→4→1: stored coords untouched, screen radius constant", async () => {
+  test("50M-02 zoom 1→2→4→1: same points, stored coords untouched, dots shrink", async () => {
     const base = await positionsOf(page, ALL);
     const baseWidth = await circleScreenFillWidthPx(page, KICK);
     const zoomAt = async () =>
@@ -112,18 +114,25 @@ test.describe.serial("STEP50 map usability (offline harness fixtures)", () => {
     await page.evaluate(() => (window as any).__sm.app.zoomMapBy(2));
     await expect(page.locator("[data-testid='map-zoom-label']")).toHaveText("200%");
     expect(await zoomAt()).toBe(2);
+    const w2 = await circleScreenFillWidthPx(page, KICK);
     await page.evaluate(() => (window as any).__sm.app.zoomMapBy(2));
     await expect(page.locator("[data-testid='map-zoom-label']")).toHaveText("400%");
     expect(await zoomAt()).toBe(4);
 
     const zoomed = await positionsOf(page, ALL);
-    // cx/cy attributes are the stored map-sourced base pixels — unchanged.
+    // STEP91: the SAME points are drawn — zoom never adds, removes or swaps a
+    // sample. cx/cy attributes are the stored map-sourced base pixels — unchanged.
     expect(zoomed).toEqual(base);
 
-    // Screen-space radius must NOT grow with zoom (screen constant).
+    // Step 3 of the fix: zoom ONLY shrinks the dots. The fill is strictly smaller
+    // at every step and never collapses below a visible minimum.
     const w4 = await circleScreenFillWidthPx(page, KICK);
+    expect(baseWidth).not.toBeNull();
+    expect(w2).not.toBeNull();
     expect(w4).not.toBeNull();
-    expect(Math.abs(w4! - baseWidth!)).toBeLessThan(1.0);
+    expect(w2!).toBeLessThan(baseWidth!);
+    expect(w4!).toBeLessThan(w2!);
+    expect(w4!).toBeGreaterThan(baseWidth! * 0.5); // meaningful minimum
 
     // The map + points stay interactable after a zoom: a wheel-zoom AT the point
 // (anchor-under-pointer) keeps it on-screen, and a click on the (still same)

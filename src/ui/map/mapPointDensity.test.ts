@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { BASE_POINT_RADIUS_PX, POINT_HIT_RADIUS_PX, SELECTED_POINT_SCALE, pointRadius } from "./mapView";
+import { BASE_POINT_RADIUS_PX, MIN_POINT_RADIUS_PX, POINT_HIT_RADIUS_PX, SELECTED_POINT_SCALE, pointRadius } from "./mapView";
 
 /**
  * STEP76 — visual density guard for large point clouds.
@@ -48,10 +48,15 @@ describe("map view : point size under a dense cloud (800+ samples)", () => {
     expect(new Set(radii)).toEqual(new Set([BASE_POINT_RADIUS_PX]));
   });
 
-  it("keeps points small on screen at every zoom level", () => {
+  it("shrinks points as the user zooms in, floored at the minimum", () => {
+    let prev = pointRadius(1);
     for (const zoom of [0.5, 1, 1.6, 2, 4, 8]) {
-      expect(pointRadius(zoom)).toBe(2.5);
+      const r = pointRadius(zoom);
+      expect(r).toBeLessThanOrEqual(prev + 1e-12);
+      expect(r).toBeGreaterThanOrEqual(MIN_POINT_RADIUS_PX);
+      prev = r;
     }
+    expect(pointRadius(4)).toBeLessThan(pointRadius(1));
   });
 
   it("keeps focus/selection strictly larger than the resting point", () => {

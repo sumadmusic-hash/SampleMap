@@ -266,8 +266,10 @@ describe("STEP85 — no business logic or algorithm was changed", () => {
     expect(mapRenderSrc).toContain("onRendered?:");
     // The counts come from the existing point set, not from a new computation.
     expect(mapRenderSrc).toContain("total: points.length");
-    // Selection is the new display limit, and it runs AFTER the merge.
-    expect(mapRenderSrc).toContain("selectDisplayedPoints(");
+    // STEP91: the map draws the SAME points at every zoom — the former
+    // zoom-dependent quadtree selection is no longer on this path.
+    expect(mapRenderSrc).not.toContain("selectDisplayedPoints(");
+    expect(mapRenderSrc).toContain("const displayed = displayPoints;");
     // The renderer draws individual points and hit-tests exactly those.
     expect(mapRenderSrc).toContain("pointAt(displayed");
     // No cluster structure or cluster interaction is left.

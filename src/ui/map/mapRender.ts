@@ -7,7 +7,6 @@ import {
   MapCamera,
   MapPoint,
   ScreenPosition,
-  cameraToViewportBBox,
   defaultMapCamera,
   globalMapPoints,
   mapPoints,
@@ -19,7 +18,6 @@ import {
   tooltipFor,
   zoomBy,
 } from "./mapView";
-import { selectDisplayedPoints } from "./pointSelection";
 import { calibrateDisplayX } from "./xCalibration";
 import type { GlobalMapPoint } from "../../global/contract";
 import { soundSpaceCornerLabels } from "../../analysis/soundSpaceProjector";
@@ -182,25 +180,13 @@ export function renderSampleMap(
     return;
   }
 
-  // STEP86 — the hard display limit. Runs strictly AFTER the existing pipeline
-  // above, so Global/My visibility, the content-identity dedup and the
-  // global/local overlap are all already decided: this only chooses which of
-  // those very points are PAINTED. No coordinate is ever rewritten, and no
-  // aggregate element is ever created.
-  //
-  // The focused point and every batch-selected point are pinned, so a sample
-  // the user is working with can never be the one that disappears.
-  const pinned: string[] = [];
-  if (opts.selectedSampleId !== undefined) pinned.push(opts.selectedSampleId);
-  if (opts.selectedSampleIds) pinned.push(...opts.selectedSampleIds);
-  // STEP90 — hierarchical selection. The viewport is passed so the quadtree is
-  // evaluated only for the cells on screen; selection is otherwise independent
-  // of the camera, which is what makes panning a pure membership change.
-  const displayed = selectDisplayedPoints(displayPoints, {
-    zoom: camera.zoom,
-    bbox: cameraToViewportBBox(camera),
-    keepSampleIds: pinned,
-  });
+  // STEP91 — the map ALWAYS draws the same set of points. Zoom never adds,
+  // removes or swaps a sample: it only changes how large the dots are (see the
+  // radius below). The former zoom-dependent quadtree LOD (`selectDisplayedPoints`)
+  // is therefore not used on this path — every merged, content-deduplicated,
+  // calibrated point is drawn at every zoom and pan. `displayPoints` are copies,
+  // so no `MapPoint` (position, identity, membership) is altered.
+  const displayed = displayPoints;
 
   // STEP86 — report the observed counts (read-only; changes nothing below).
   opts.onRendered?.({
@@ -285,20 +271,19 @@ export function renderSampleMap(
   const byId = new Map<string, SampleIndexRecord>();
   for (const record of opts.records) byId.set(record.sampleId, record);
 
-  // Point radius (FINAL_UI_UX §8.1 + STEP38 §27, corrected): the base-unit SVG
-  // radius is the SCREEN-space constant divided by the camera zoom, because the
-  // content group carries the zoom transform. The rendered ON-SCREEN radius is
-  // therefore exactly BASE_POINT_RADIUS_PX at every zoom level — zoom
-  // changes spatial separation ONLY, never point size. Emphasized (focused or
-  // batch-selected, §8.2) uses a larger but equally zoom-independent radius.
+  // Point radius (STEP91): zoom only shrinks the SAME points. The base-unit SVG
+  // radius is the desired screen radius divided by the camera zoom, because the
+  // content group carries the zoom transform; after that group's scale(zoom) the
+  // ON-SCREEN radius resolves to exactly `pointRadius(zoom)` (see mapView.ts).
+  // Emphasized (focused / batch-selected, §8.2) stays proportionally larger.
   // Presentation only — positions untouched.
   const restRadius = pointRadius(camera.zoom) / camera.zoom;
   const emphasizedRadius = pointRadius(camera.zoom, true) / camera.zoom;
 
-  // Points: one circle per DISPLAYED map point, positioned ONLY by the
-  // view-model; the camera transform moves the whole group, never the circles
-  // themselves. STEP86 removed aggregation entirely — every painted element is a
-  // real sample point at its real `mapPosition`-derived coordinate.
+  // Points: one circle per map point, positioned ONLY by the view-model; the
+  // camera transform moves the whole group, never the circles themselves. Every
+  // painted element is a real sample point at its real coordinate, and the set
+  // is identical at every zoom.
   for (const point of displayed) {
     const s = toScreen(point, { width: MAP_WIDTH, height: MAP_HEIGHT });
     const focused = point.sampleId === opts.selectedSampleId;

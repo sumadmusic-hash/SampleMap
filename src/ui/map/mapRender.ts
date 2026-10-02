@@ -20,6 +20,7 @@ import {
   zoomBy,
 } from "./mapView";
 import { selectDisplayedPoints } from "./pointSelection";
+import { calibrateDisplayX } from "./xCalibration";
 import type { GlobalMapPoint } from "../../global/contract";
 import { soundSpaceCornerLabels } from "../../analysis/soundSpaceProjector";
 import { semanticDotColor } from "./semanticColors";
@@ -156,6 +157,16 @@ export function renderSampleMap(
     : [];
   const points = mergeMapPoints(localPoints, globalPts);
 
+  // STEP91 — presentation-only X calibration, applied as late as possible: the
+  // rawX produced by the existing map projection becomes the actual displayed /
+  // hit-tested map X only here. `MapPoint.x` (rawX), Y, the analysis pipeline
+  // and the stored/deduped point data are all untouched; these are copies used
+  // exclusively for the map layer below.
+  const displayPoints = points.map((point) => ({
+    ...point,
+    x: calibrateDisplayX(point.x),
+  }));
+
   if (points.length === 0) {
     const empty = document.createElement("div");
     empty.className = "map-empty";
@@ -185,7 +196,7 @@ export function renderSampleMap(
   // STEP90 — hierarchical selection. The viewport is passed so the quadtree is
   // evaluated only for the cells on screen; selection is otherwise independent
   // of the camera, which is what makes panning a pure membership change.
-  const displayed = selectDisplayedPoints(points, {
+  const displayed = selectDisplayedPoints(displayPoints, {
     zoom: camera.zoom,
     bbox: cameraToViewportBBox(camera),
     keepSampleIds: pinned,

@@ -386,13 +386,13 @@ describe("STEP47 §3/§7 — popularity signals drive ONLY the analysis gate", (
       computeAnalysisEligibility({ owner: "u", authenticatedUserId: "u", numFavorites: 0, numUsages: 0 }).reason,
     ).toBe("own");
     expect(
-      computeAnalysisEligibility({ owner: "v", authenticatedUserId: "u", numFavorites: 3, numUsages: 2 }).reason,
+      computeAnalysisEligibility({ owner: "v", authenticatedUserId: "u", numFavorites: 250, numUsages: 2000 }).reason,
     ).toBe("foreign-favorite-and-usage");
     expect(
-      computeAnalysisEligibility({ owner: "v", authenticatedUserId: "u", numFavorites: 3, numUsages: 0 }).reason,
+      computeAnalysisEligibility({ owner: "v", authenticatedUserId: "u", numFavorites: 250, numUsages: 0 }).reason,
     ).toBe("foreign-favorite");
     expect(
-      computeAnalysisEligibility({ owner: "v", authenticatedUserId: "u", numFavorites: 0, numUsages: 1 }).reason,
+      computeAnalysisEligibility({ owner: "v", authenticatedUserId: "u", numFavorites: 0, numUsages: 2000 }).reason,
     ).toBe("foreign-usage");
     expect(
       computeAnalysisEligibility({ owner: "v", authenticatedUserId: "u", numFavorites: 0, numUsages: 0 }).reason,
@@ -407,7 +407,7 @@ describe("STEP47 §3/§7 — popularity signals drive ONLY the analysis gate", (
       computeAnalysisEligibility({ owner: "v", authenticatedUserId: "u", numFavorites: undefined, numUsages: undefined }).eligible,
     ).toBe(false);
     expect(
-      computeAnalysisEligibility({ owner: "v", authenticatedUserId: undefined, numFavorites: 2, numUsages: 0 }).reason,
+      computeAnalysisEligibility({ owner: "v", authenticatedUserId: undefined, numFavorites: 250, numUsages: 0 }).reason,
     ).toBe("foreign-favorite");
   });
 

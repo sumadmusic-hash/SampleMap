@@ -1943,7 +1943,7 @@ describe("SampleMap UI : scan eligibility gating (STEP38)", () => {
     name,
     displayName: "Foreign Fav",
     ownerName: "users/bob",
-    numFavorites: 3,
+    numFavorites: 250,
     numUsages: 0,
   });
 
@@ -1953,7 +1953,7 @@ describe("SampleMap UI : scan eligibility gating (STEP38)", () => {
     displayName: "Foreign Use",
     ownerName: "users/bob",
     numFavorites: 0,
-    numUsages: 4,
+    numUsages: 2000,
   });
 
   const foreignLoops = (name = "samples/foreign-loops"): SampleMeta => ({
@@ -1961,8 +1961,8 @@ describe("SampleMap UI : scan eligibility gating (STEP38)", () => {
     name,
     displayName: "Foreign Loops",
     ownerName: "users/bob",
-    numFavorites: 7,
-    numUsages: 9,
+    numFavorites: 250,
+    numUsages: 2000,
     kind: "loop",
   });
 
@@ -2062,7 +2062,7 @@ describe("SampleMap UI : scan eligibility gating (STEP38)", () => {
   it("gating never re-analyzes already-analyzed records (eligibility is enqueue-only)", async () => {
     const { app, db, index, createRunnerCalls } = await mk({
       authenticatedUserId: "users/alice",
-      scanFn: async () => scanOf({ ...META_A, numFavorites: 1 }),
+      scanFn: async () => scanOf({ ...META_A, numFavorites: 250 }),
     });
     try {
       const frozen = makeSample("samples/a", {

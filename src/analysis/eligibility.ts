@@ -20,7 +20,8 @@
  *
  * RULES (§5 / §6):
  *   - OWN sample  (owner === authenticatedUserId, stable id)  → ALWAYS eligible.
- *   - FOREIGN sample → eligible iff `numFavorites >= 1` OR `numUsages >= 1`.
+ *   - FOREIGN sample → eligible iff `numFavorites >= FOREIGN_MIN_FAVORITES` OR
+ *     `numUsages >= FOREIGN_MIN_USAGES` (central constants below).
  *   - MISSING/undefined values are NEVER coerced positive: `undefined` is
  *     treated as 0 (a record without counters contributes exactly 0, so it can
  *     never unlock eligibility). Values are never clamped up.
@@ -47,6 +48,17 @@ import type { SampleIndexRecord } from "../persistence/indexStore";
 
 /** Version of the eligibility + prioritization semantics. */
 export const ELIGIBILITY_ALGORITHM_VERSION = "1.0.0" as const;
+
+/**
+ * STEP94 — central FOREIGN eligibility thresholds (single source of truth).
+ *
+ * A foreign sample is eligible when `numFavorites >= FOREIGN_MIN_FAVORITES` OR
+ * `numUsages >= FOREIGN_MIN_USAGES`. These values are deliberately the ONLY place
+ * the thresholds live; no call site repeats them as magic numbers. Changing a
+ * threshold is a one-line change here.
+ */
+export const FOREIGN_MIN_FAVORITES = 250;
+export const FOREIGN_MIN_USAGES = 2000;
 
 /** Stable reason labels. Every outcome is one of these six. */
 export type EligibilityReason =
@@ -82,7 +94,8 @@ export interface EligibilityInput {
  * Pure, deterministic analysis-eligibility decision (§5/§6).
  *
  *   - OWN: owner === authenticatedUserId  → always eligible.
- *   - FOREIGN: eligible iff favorites >= 1 OR usage >= 1.
+ *   - FOREIGN: eligible iff favorites >= FOREIGN_MIN_FAVORITES OR usage >=
+ *     FOREIGN_MIN_USAGES (central constants).
  *   - Missing/undefined counters are `0` — never coerced positive.
  *   - Missing identity → foreign rules (never wrongly claimed own).
  */
@@ -105,8 +118,8 @@ export function computeAnalysisEligibility(
   const favorites = typeof numFavorites === "number" && Number.isFinite(numFavorites) ? Math.max(0, numFavorites) : 0;
   const usage = typeof numUsages === "number" && Number.isFinite(numUsages) ? Math.max(0, numUsages) : 0;
 
-  const favSignal = favorites >= 1;
-  const usageSignal = usage >= 1;
+  const favSignal = favorites >= FOREIGN_MIN_FAVORITES;
+  const usageSignal = usage >= FOREIGN_MIN_USAGES;
 
   if (favSignal && usageSignal) {
     return { eligible: true, own: false, reason: "foreign-favorite-and-usage" };

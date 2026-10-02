@@ -6,6 +6,8 @@ import {
   priorityGroupOf,
   priorityGroupOfMeta,
   PRIORITY_GROUP_LABELS,
+  FOREIGN_MIN_FAVORITES,
+  FOREIGN_MIN_USAGES,
 } from "./eligibility";
 import { makeSample } from "../persistence/test-helpers";
 import type { SampleMeta } from "@audiotool/nexus/api";
@@ -70,10 +72,10 @@ describe("computeAnalysisEligibility (STEP38 §5/§6)", () => {
     expect(r.reason).toBe("foreign-no-signal");
   });
 
-  it("FOREIGN favorites >= 1 alone is eligible", () => {
+  it("FOREIGN favorites >= FOREIGN_MIN_FAVORITES alone is eligible", () => {
     const r = computeAnalysisEligibility({
       owner: "users/bob",
-      numFavorites: 1,
+      numFavorites: FOREIGN_MIN_FAVORITES,
       numUsages: 0,
       authenticatedUserId: "users/alice",
     });
@@ -81,22 +83,33 @@ describe("computeAnalysisEligibility (STEP38 §5/§6)", () => {
     expect(r.reason).toBe("foreign-favorite");
   });
 
-  it("FOREIGN usage >= 1 alone is eligible", () => {
+  it("FOREIGN usage >= FOREIGN_MIN_USAGES alone is eligible", () => {
     const r = computeAnalysisEligibility({
       owner: "users/bob",
       numFavorites: 0,
-      numUsages: 3,
+      numUsages: FOREIGN_MIN_USAGES,
       authenticatedUserId: "users/alice",
     });
     expect(r.eligible).toBe(true);
     expect(r.reason).toBe("foreign-usage");
   });
 
-  it("FOREIGN favorites AND usage both >= 1 is eligible with the combined reason", () => {
+  it("FOREIGN below BOTH thresholds is INELIGIBLE (new stricter gate)", () => {
     const r = computeAnalysisEligibility({
       owner: "users/bob",
-      numFavorites: 2,
-      numUsages: 5,
+      numFavorites: FOREIGN_MIN_FAVORITES - 1,
+      numUsages: FOREIGN_MIN_USAGES - 1,
+      authenticatedUserId: "users/alice",
+    });
+    expect(r.eligible).toBe(false);
+    expect(r.reason).toBe("foreign-no-signal");
+  });
+
+  it("FOREIGN favorites AND usage both at/above thresholds uses the combined reason", () => {
+    const r = computeAnalysisEligibility({
+      owner: "users/bob",
+      numFavorites: FOREIGN_MIN_FAVORITES,
+      numUsages: FOREIGN_MIN_USAGES,
       authenticatedUserId: "users/alice",
     });
     expect(r.eligible).toBe(true);
@@ -115,7 +128,7 @@ describe("computeAnalysisEligibility (STEP38 §5/§6)", () => {
 
     const oneMissing = computeAnalysisEligibility({
       owner: "users/bob",
-      numFavorites: 4,
+      numFavorites: FOREIGN_MIN_FAVORITES,
       numUsages: undefined,
       authenticatedUserId: "users/alice",
     });
@@ -147,7 +160,7 @@ describe("computeAnalysisEligibility (STEP38 §5/§6)", () => {
 
     const foreignHits1 = computeAnalysisEligibility({
       owner: "users/bob",
-      numFavorites: 1,
+      numFavorites: FOREIGN_MIN_FAVORITES,
       numUsages: 0,
       authenticatedUserId: undefined,
     });
@@ -158,7 +171,7 @@ describe("computeAnalysisEligibility (STEP38 §5/§6)", () => {
   it("is deterministic (same input ⇒ same output, stable reason set)", () => {
     const input = {
       owner: "users/bob",
-      numFavorites: 7,
+      numFavorites: FOREIGN_MIN_FAVORITES,
       numUsages: 0,
       authenticatedUserId: "users/alice",
     };
@@ -174,7 +187,7 @@ describe("computeAnalysisEligibility (STEP38 §5/§6)", () => {
     expect(own.eligible).toBe(true);
 
     const foreign = computeEligibilityFromMeta(
-      META({ ownerName: "users/bob", numFavorites: 1 }),
+      META({ ownerName: "users/bob", numFavorites: FOREIGN_MIN_FAVORITES }),
       "users/alice",
     );
     expect(foreign.eligible).toBe(true);

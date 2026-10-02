@@ -41,10 +41,11 @@ test.describe.serial("STEP16R E-P2 copy + labels (shared page)", () => {
     await expect(overlay.locator(".first-use-title")).toHaveText(
       "No analyzed samples yet.",
     );
-    // STEP86: the first-use overlay is information only — no scan CTA.
+    // STEP86/STEP93: the first-use overlay is information only — no scan CTA;
+    // indexing is manual, so it points at Advanced -> Start Scan.
     await expect(overlay.locator("[data-testid='first-use-index']")).toHaveCount(0);
     await expect(overlay.locator(".first-use-sub")).toContainText(
-      "Indexing your library in the background",
+      "Use Start Scan under Advanced",
     );
 
     // Index the fixture set once (real scan/decode/analysis).

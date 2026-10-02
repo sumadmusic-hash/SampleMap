@@ -3,10 +3,9 @@ import { expect, type Page } from "@playwright/test";
 /**
  * STEP86 — start indexing from Advanced.
  *
- * The first-use overlay on the primary map is INFORMATION only: indexing runs
- * automatically, so it no longer offers a "start scanning" button. The manual
- * `Start Scan` control still exists under Advanced, and e2e specs that need a
- * deterministic trigger open it from there.
+ * The first-use overlay on the primary map is INFORMATION only. STEP93: the app
+ * no longer indexes automatically on open, so specs trigger the manual
+ * `Start Scan` control under Advanced for a deterministic run.
  */
 export async function startIndexing(page: Page): Promise<void> {
   const details = page.locator("[data-testid='advanced-area']");

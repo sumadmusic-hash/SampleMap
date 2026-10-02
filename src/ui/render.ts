@@ -585,10 +585,10 @@ function renderProjectPicker(app: SampleMapApp): HTMLElement {
 /**
  * STEP85 — the plain-language index status.
  *
- * The product indexes and analyses the library AUTOMATICALLY in the background,
- * so the primary line reports progress instead of inviting the user to press
- * "Analyse N". While a run is active it reads "Indexing samples… N analyzed",
- * otherwise "N samples".
+ * STEP93: indexing is manual (Advanced -> Start Scan), so the primary line no
+ * longer claims a background run is in progress. While a run is active it reads
+ * "Indexing samples… N analyzed", once anything is indexed "N samples", and on
+ * a fresh, un-indexed library it states that plainly.
  */
 function indexStatusText(app: SampleMapApp): string {
   const analyzed = app.analysis.analyzed;
@@ -598,7 +598,7 @@ function indexStatusText(app: SampleMapApp): string {
     app.scan.status === "scanning";
   if (running) return `Indexing samples… ${analyzed} analyzed`;
   if (analyzed > 0) return `${analyzed} samples`;
-  return "Indexing samples…";
+  return "No samples indexed yet";
 }
 
 
@@ -1188,11 +1188,9 @@ function renderMapOnly(root: HTMLElement, app: SampleMapApp): boolean {
 /**
  * First-use note on the primary map.
  *
- * STEP86: this is now purely INFORMATION. The product indexes and analyses the
- * library automatically in the background, so the main view no longer offers a
- * "start scanning" call to action — a button that merely restates what is
- * already happening. The technical `Start Scan` control still exists under
- * Advanced as a manual fallback.
+ * STEP86/STEP93: this is purely INFORMATION. Indexing is manual (Advanced ->
+ * Start Scan), so the note no longer claims a background run is happening and
+ * simply points at that existing control; there is no scan CTA on the map.
  */
 function renderFirstUseOverlay(): HTMLElement {
   const overlay = el("div", "first-use-overlay");
@@ -1204,7 +1202,7 @@ function renderFirstUseOverlay(): HTMLElement {
     el(
       "div",
       "first-use-sub",
-      "Your public Audiotool samples, arranged as an explorable soundscape. Indexing your library in the background — samples appear here as they are analyzed.",
+      "Your public Audiotool samples, arranged as an explorable soundscape. Use Start Scan under Advanced to index your library — samples appear here as they are analyzed.",
     ),
   );
   return overlay;

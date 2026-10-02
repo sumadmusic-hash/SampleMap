@@ -1084,18 +1084,15 @@ if (this.scanAborted) {
   }
 
   /**
-   * AUTOMATIC background indexing — the NORMAL product path.
+   * Background indexing orchestration — kept for explicit callers.
    *
-   * Opening the app is enough: it scans the library and then analyses whatever
-   * is due, so the user never has to press "Start Scan" and then "Analyse N"
-   * first. The manual controls stay available as the technical/debug fallback.
-   *
-   * This is pure ORCHESTRATION of the existing `startScan()` + `analyze()`: no
-   * eligibility rule, budget rule, queue rule or pipeline step is duplicated
-   * here. The mount calls it WITHOUT awaiting (`void app.startBackgroundIndexing()`),
-   * so the UI is interactive while it runs and the mount never blocks on the
-   * scan, let alone on the analysis run. Individual results keep appearing live
-   * on the map through the existing per-job refresh.
+   * STEP93: the normal mount no longer invokes this (no automatic scan when the
+   * app opens). It remains the single orchestration point for callers that do
+   * want a full background pass, and still sequences the existing `startScan()`
+   * + `analyze()`; no eligibility, budget, queue or pipeline rule is duplicated
+   * here. When called it is meant to run without awaiting so the UI stays
+   * interactive, and individual results keep appearing live through the existing
+   * per-job refresh.
    */
   async startBackgroundIndexing(): Promise<void> {
     // MEHRACHSTART: exactly one automatic run per app instance, no matter how

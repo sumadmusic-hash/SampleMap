@@ -25,9 +25,10 @@ import type { PublishDeliveryMode } from "./view";
  *   const app = mountSampleMap(document.getElementById("app")!, deps);
  *   await app.refreshSearch();
  *
- * `mountAuthenticated` additionally starts the AUTOMATIC background indexing
- * (scan, then analyse the due jobs within the 1000 budget) without awaiting it,
- * so the app is usable immediately and fills itself in the background.
+ * `mountAuthenticated` does NOT start any scan or indexing on its own: opening
+ * the app leaves it on the empty state until the user triggers a scan manually
+ * (Advanced -> Start Scan). `startBackgroundIndexing` still exists for explicit
+ * callers but is no longer invoked here.
  */
 export async function mountAuthenticated(
   root: HTMLElement,
@@ -72,11 +73,8 @@ export async function mountAuthenticated(
   await app.refreshSearch();
   // Step 16K: load global map points when a global index is configured.
   if (opts.globalIndex) void app.refreshGlobalPoints();
-  // NORMAL PRODUCT PATH: opening the app starts indexing in the background, so
-  // the user no longer has to press "Start Scan" and then "Analyse N" first.
-  // Fire-and-forget on purpose — the mount must not wait for the scan, let
-  // alone for the whole analysis run. The orchestrator sequences the existing
-  // `startScan()` + `analyze()` and is a no-op when it was already started.
-  void app.startBackgroundIndexing();
+  // STEP93: NO automatic scan / background indexing on mount. Opening the app
+  // only wires the UI and loads what already exists; the library is indexed
+  // exclusively through the manual `Advanced -> Start Scan` control.
   return app;
 }

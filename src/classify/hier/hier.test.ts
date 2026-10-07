@@ -129,6 +129,62 @@ function pitchedWeak(): AudioFeatures {
   });
 }
 
+/** Dark, pitched, sustained musical profile — a LOOP of this material must keep
+ * its musical type: the loop rule neutralises drums one-shots only. */
+function musicalLoopFeatures(): AudioFeatures {
+  return makeFeatures({
+    duration: 2,
+    transientDensity: 1,
+    spectralCentroid: 130,
+    spectralBandwidth: 120,
+    spectralRolloff: 800,
+    zeroCrossingRate: 0.01,
+    spectralFlatness: 0.12,
+    attack: 0.1,
+    rms: 0.35,
+    peak: 0.5,
+  });
+}
+
+const musicalLoopV2 = (): AudioFeaturesV2 =>
+  v2({
+    durationSec: 2,
+    pitchHz: 55,
+    pitchConfidence: 0.8,
+    harmonicity: 0.7,
+    spectralCentroidHz: 130,
+    spectralSpreadHz: 120,
+    spectralFlatness: 0.12,
+  });
+
+/** Pitched vocal-band profile — a LOOP of this material must keep `vocal`. */
+function vocalLoopFeatures(): AudioFeatures {
+  return makeFeatures({
+    duration: 2.2,
+    transientDensity: 4,
+    spectralCentroid: 1100,
+    spectralBandwidth: 1800,
+    spectralRolloff: 6000,
+    zeroCrossingRate: 0.07,
+    spectralFlatness: 0.55,
+    attack: 0.03,
+    rms: 0.25,
+    peak: 0.5,
+  });
+}
+
+const vocalLoopV2 = (): AudioFeaturesV2 =>
+  v2({
+    durationSec: 2.2,
+    pitchHz: 320,
+    pitchConfidence: 0.75,
+    harmonicity: 0.6,
+    spectralFlux: 0.5,
+    spectralCentroidHz: 1100,
+    spectralSpreadHz: 1800,
+    spectralFlatness: 0.55,
+  });
+
 type RunOpts = {
   name?: string;
   tags?: string[];
@@ -170,6 +226,71 @@ describe("STEP44 structure (§7–§8; SC1/SC2)", () => {
   });
   it("6. loop 5s → loop", () => {
     expect(run(makeFeatures({ duration: 5 }), { kind: "loop", durationSeconds: 5 }).hier.structure).toBe("loop");
+  });
+  it("6b. loop with decisive kick acoustics → family drums, type other (loops never get a one-shot drum type)", () => {
+    const r = run(kickFeatures(), { kind: "loop", durationSeconds: 0.3, v2: kickV2() });
+    expect(r.hier.structure).toBe("loop");
+    expect(r.hier.family).toBe("drums");
+    expect(r.hier.type).toBe(UNKNOWN_TYPE);
+    expect(r.surface.primaryClass).toBe(UNKNOWN_TYPE);
+    expect(isWellFormedHierClassification(r.hier)).toBe(true);
+  });
+  it("6c. explicit drum tag on a loop → tag may fix the FAMILY but never re-introduces a one-shot type", () => {
+    const r = run(ambiguousDrum(), { kind: "loop", durationSeconds: 0.4, v2: ambiguousDrumV2(), tags: ["snare"] });
+    expect(r.hier.structure).toBe("loop");
+    expect(r.hier.family).toBe("drums");
+    expect(r.hier.type).toBe(UNKNOWN_TYPE);
+    expect(r.hier.reconciliation.tagType).toBe("snare");
+  });
+  it("6d. loop rule is SCOPED to drums: a musical loop keeps its musical type", () => {
+    const r = run(musicalLoopFeatures(), {
+      kind: "loop",
+      durationSeconds: 2,
+      name: "Sub Bass",
+      v2: musicalLoopV2(),
+    });
+    expect(r.hier.structure).toBe("loop");
+    expect(r.hier.family).toBe("musical");
+    expect(r.hier.type).toBe("bass");
+    expect(r.surface.primaryClass).toBe("bass");
+    expect(isWellFormedHierClassification(r.hier)).toBe(true);
+  });
+  it("6e. loop rule is SCOPED to drums: a vocal loop keeps `vocal`", () => {
+    const r = run(vocalLoopFeatures(), {
+      kind: "loop",
+      durationSeconds: 2.2,
+      name: "Singing Hook",
+      v2: vocalLoopV2(),
+    });
+    expect(r.hier.structure).toBe("loop");
+    expect(r.hier.family).toBe("vocal");
+    expect(r.hier.type).toBe("vocal");
+    expect(r.surface.primaryClass).toBe("vocal");
+  });
+  it("6f. decisive drum-loop acoustics keep the family against a contradicting tag; only the TYPE is neutral", () => {
+    const r = run(kickFeatures(), {
+      kind: "loop",
+      durationSeconds: 0.3,
+      v2: kickV2(),
+      tags: ["bass"],
+    });
+    expect(r.hier.family).toBe("drums");
+    expect(r.hier.type).toBe(UNKNOWN_TYPE);
+    expect(r.hier.reconciliation.status).toBe("CONFLICT");
+    expect(r.hier.reconciliation.winningSource).toBe("audio");
+    // The real acoustic type stays observable even though it is not the final type.
+    expect(r.hier.reconciliation.audioType).toBe("kick");
+  });
+  it("6g. a MATCHING drum tag still reads AGREE although the loop type stays neutral", () => {
+    const r = run(kickFeatures(), {
+      kind: "loop",
+      durationSeconds: 0.3,
+      v2: kickV2(),
+      tags: ["kick"],
+    });
+    expect(r.hier.family).toBe("drums");
+    expect(r.hier.type).toBe(UNKNOWN_TYPE);
+    expect(r.hier.reconciliation.status).toBe("AGREE");
   });
 });
 

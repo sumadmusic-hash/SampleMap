@@ -131,7 +131,9 @@ export function classifyHier(input: HierClassifyInput): HierResult {
     durationSeconds: meta.durationSeconds,
   });
 
-  const typeSc = classifyType({
+  // Stage 2 runs for EVERY structure: the acoustic type is always computed and
+  // it is what reconciliation compares the metadata against.
+  const rawTypeSc = classifyType({
     family: familySc.family,
     features,
     v2: v2 ?? null,
@@ -139,8 +141,30 @@ export function classifyHier(input: HierClassifyInput): HierResult {
     durationSeconds: meta.durationSeconds,
   });
 
-  const audioType = typeSc.type;
-  const audioStrong = familySc.family !== "unknown" && !typeSc.ambiguous;
+  // LOOP RULE — a loop is multi-hit sequence material, so a single one-shot
+  // drum type (kick, snare, clap, hihat, openhat, tom, cymbal, percussion) would
+  // label the whole sequence by its loudest hit. When the acoustic winner for a
+  // loop IS such a type, the type is neutralised to UNKNOWN_TYPE with the exact
+  // same TypeScoring shape as the unknown-family guard in classifyType
+  // (type.ts:223-225) — no scores, no runners, no margin, ambiguous.
+  //
+  // Deliberately scoped to the DRUMS family: the other families' loop types stay
+  // decision-bearing (STEP44 §4 documents a musical loop with a vocal tag as
+  // `type: "vocal"`), so the one-shot mislabel is removed without collapsing the
+  // majority of the catalogue into "other". The family decision is untouched.
+  const drumOneShotTypeOnLoop =
+    structure === "loop" && familyOfType(rawTypeSc.type) === "drums";
+  const typeSc: TypeScoring = drumOneShotTypeOnLoop
+    ? { scores: {}, type: UNKNOWN_TYPE, marginRatio: 0, runners: [], ambiguous: true }
+    : rawTypeSc;
+
+  // Reconciliation always sees the REAL acoustic type, never the neutralised
+  // loop view: a matching tag must still read AGREE and a contradicting one must
+  // still read CONFLICT. Suppressing a type must not demote the ACOUSTIC
+  // evidence, otherwise metadata could flip the family of a decisively-drum loop
+  // (§24: strong audio wins).
+  const audioType = rawTypeSc.type;
+  const audioStrong = familySc.family !== "unknown" && !rawTypeSc.ambiguous;
 
   const reconciliation = reconcile({
     audioType,
@@ -166,6 +190,11 @@ export function classifyHier(input: HierClassifyInput): HierResult {
       if (metaFamily !== "unknown") family = metaFamily;
     }
   }
+  // Final guard: the metadata adoption above may re-introduce an acoustic
+  // one-shot drum type for a loop (reconcile() runs on weak audio when the type
+  // is neutral). A tag or name may fix the FAMILY, but it never turns a loop back
+  // into a one-shot drum hit — the family decided above is kept untouched.
+  if (structure === "loop" && familyOfType(type) === "drums") type = UNKNOWN_TYPE;
 
   const subtype = subtypeForType(pickSubtype(tagEv.subtypes, nameEv.subtypes), type);
 

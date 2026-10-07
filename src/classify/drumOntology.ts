@@ -130,11 +130,11 @@ export const TAG_SUBTYPE_ALIASES: Record<
   SubtypeId,
   { readonly exact: readonly string[]; readonly phrases: readonly string[] }
 > = {
-  kick: { exact: ["kick"], phrases: ["kick", "bassdrum", "bass drum", "subkick"] },
-  snare: { exact: ["snare", "snares"], phrases: ["snare", "snaredrum", "snare drum"] },
-  clap: { exact: ["clap", "claps"], phrases: ["clap", "handclap", "hand clap", "handclaps"] },
+  kick: { exact: ["kick", "bd"], phrases: ["kick", "bassdrum", "bass drum", "basedrum", "base drum", "subkick"] },
+  snare: { exact: ["snare", "snares", "sd"], phrases: ["snare", "snaredrum", "snare drum"] },
+  clap: { exact: ["clap", "claps"], phrases: ["clap", "handclap", "hand clap", "handclaps", "snap", "snaps"] },
   closedhat:
-  { exact: ["chh"], phrases: ["closedhihat", "closed hi hat", "closedhat", "closed hat"] },
+  { exact: ["chh", "hh"], phrases: ["closedhihat", "closed hi hat", "closedhat", "closed hat"] },
   openhat:
   { exact: ["ohh"], phrases: ["openhihat", "open hi hat", "openhat", "open hat"] },
   ride: { exact: ["ride", "rides"], phrases: ["ride cymbal", "ride"] },
@@ -149,7 +149,7 @@ export const TAG_SUBTYPE_ALIASES: Record<
   conga: { exact: ["conga", "congas"], phrases: ["conga", "congas", "tumba", "quinto"] },
   clave: { exact: ["clave", "claves"], phrases: ["clave", "claves", "woodblock", "wood block"] },
   "percussion-other":
-  { exact: ["percussion", "perc"], phrases: ["percussion", "perc"] },
+  { exact: ["percussion", "perc", "percu"], phrases: ["percussion", "perc", "percu"] },
 };
 
 /** Match a normalized tag against a subtype's alias set (phrase-boundary aware). */

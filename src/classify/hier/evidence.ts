@@ -30,14 +30,14 @@ import type { NameEvidence, SoundFamily, TagEvidence } from "./types";
  * boundaries so abbreviations and compound tokens do not collide.
  */
 export const TYPE_TERMS: Record<ClassId, readonly string[]> = {
-  kick: ["kick", "kicks", "bassdrum", "bass drum", "subkick"],
+  kick: ["kick", "kicks", "bassdrum", "bass drum", "basedrum", "base drum", "subkick"],
   snare: ["snare", "snares", "snaredrum", "snare drum"],
-  clap: ["clap", "claps", "handclap", "hand clap", "handclaps"],
-  hihat: ["hihat", "hi hat", "hat", "hats"],
+  clap: ["clap", "claps", "handclap", "hand clap", "handclaps", "snap", "snaps"],
+  hihat: ["hihat", "hi hat", "hithat", "hat", "hats"],
   openhat: ["openhihat", "open hi hat", "openhat", "open hat"],
   tom: ["tom", "toms", "tomtom", "tom tom", "racktom", "floortom"],
   cymbal: ["cymbal", "cymbals", "crash cymbal", "ride cymbal", "crash", "rides", "china"],
-  percussion: ["percussion", "perc", "shaker", "tambourine", "maraca", "cabasa",
+  percussion: ["percussion", "perc", "percu", "shaker", "tambourine", "maraca", "cabasa",
     "cowbell", "cow bell", "bongo", "bongos", "conga", "congas", "clave",
     "woodblock", "wood block", "rimshot", "rim shot", "sidestick"],
   bass: ["bass", "subbass", "sub bass", "bassline"],
@@ -45,7 +45,7 @@ export const TYPE_TERMS: Record<ClassId, readonly string[]> = {
   guitar: ["guitar", "guitars", "gtr", "acoustic", "electric"],
   strings: ["strings", "string", "violin", "cello", "viola", "harp", "orchestra"],
   keys: ["keys", "keyboard", "keyboards", "rhodes", "organ", "ep"],
-  synth: ["synth", "synths", "synthesizer", "synthwave"],
+  synth: ["synth", "synths", "synthesizer", "synthesiser", "synthwave"],
   pad: ["pad", "pads"],
   lead: ["lead", "leads", "melody", "melodies", "pluck", "plucks", "arp"],
   vocal: ["vocal", "vocals", "vox", "singing", "singer", "voice", "rap", "rapped",
@@ -76,7 +76,7 @@ export const GENERIC_TERMS: readonly string[] = [
 
 /** Extra family-only hints (no precise type) used to corroborate a family. */
 const FAMILY_HINT_TERMS: Record<Exclude<SoundFamily, "unknown">, readonly string[]> = {
-  drums: ["drum", "drums", "beat", "break", "breakbeat", "hithat", "hihat", "hat", "kit"],
+  drums: ["drum", "drums", "beat", "break", "breakbeat", "hithat", "hihat", "hat", "hit", "kit"],
   musical: ["music", "musical", "melody", "melodic", "instrumental"],
   vocal: ["vocal", "vocals", "voice", "sing", "rap", "chorus", "spoken", "lyrics", "acapella"],
   fx: ["fx", "effect", "riser", "sweep", "whoosh", "impact", "uplifter", "downlifter"],

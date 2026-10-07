@@ -1260,7 +1260,9 @@ if (this.scanAborted) {
     if (this.analysisLiveTimer !== undefined) return; // already coalescing
     this.analysisLiveTimer = setTimeout(() => {
       this.analysisLiveTimer = undefined;
-      void this.refreshSearch();
+      // Best-effort: a superseded refresh (or one whose store is already closed
+      // by a disposed session) must never surface as an unhandled rejection.
+      void this.refreshSearch().catch(() => {});
     }, ANALYSIS_LIVE_REFRESH_MS);
   }
 
@@ -1289,10 +1291,11 @@ if (this.scanAborted) {
     // (and with it the result list and the map) is only re-read here. Without this
     // the surfaces keep serving the pre-run results and the map stays empty even
     // though every record is analyzed and carries a persisted map position.
-    // Best-effort: a failing re-read must not surface as an unhandled rejection.
+    // Best-effort: a failing re-read must not surface as an unhandled rejection
+    // (e.g. the session was disposed and its store closed while the run ended).
     // This final sync is authoritative — it is the only refresh that must
     // observe every record the run persisted.
-    if (typeof this.deps.search?.search === "function") void this.refreshSearch();
+    if (typeof this.deps.search?.search === "function") void this.refreshSearch().catch(() => {});
     // Step 70 — automatic global population: a completed run is the trigger
     // for "local analyzed → publish queue" (offline-first; fire-and-forget so
     // the analysis result path is never delayed by publish/delivery work).

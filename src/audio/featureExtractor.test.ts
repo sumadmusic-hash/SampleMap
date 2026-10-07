@@ -81,6 +81,54 @@ describe("FeatureExtractor", () => {
     expect(noisy.tonalNoiseRatio).toBeLessThan(tonal.tonalNoiseRatio);
   });
 
+  it("keeps the documented degenerate default for a signal that is silent throughout", () => {
+    const f = extractFeatures(audio(silence(1)));
+    expect(f.spectralCentroid).toBe(0);
+    expect(f.spectralFlatness).toBe(1);
+  });
+
+  it("ignores a silent lead-in: two different lead-in lengths measure identically", () => {
+    const body = tone([440], 0.5, 8000);
+    // Both lead-ins are exact multiples of SPECTRAL_HOP (512 at 8 kHz), so the
+    // set of energy-bearing frames is identical in both buffers and only the
+    // number of SKIPPED silent frames differs.
+    const shortLead = silence(0.512, 8000); // 8 hops
+    const longLead = silence(1.024, 8000); // 16 hops
+
+    const withShort = new Float32Array(shortLead.length + body.length);
+    withShort.set(shortLead, 0);
+    withShort.set(body, shortLead.length);
+
+    const withLong = new Float32Array(longLead.length + body.length);
+    withLong.set(longLead, 0);
+    withLong.set(body, longLead.length);
+
+    const a = extractFeatures(audio(withShort));
+    const b = extractFeatures(audio(withLong));
+
+    expect(a.spectralCentroid).toBeCloseTo(b.spectralCentroid, 6);
+    expect(a.spectralBandwidth).toBeCloseTo(b.spectralBandwidth, 6);
+    expect(a.spectralRolloff).toBeCloseTo(b.spectralRolloff, 6);
+    expect(a.spectralFlatness).toBeCloseTo(b.spectralFlatness, 6);
+    // The measurement is the tone's, not the silent lead-in's fallback.
+    expect(a.spectralCentroid).toBeGreaterThan(300);
+    expect(a.spectralFlatness).toBeLessThan(0.5);
+  });
+
+  it("measures a noise burst behind a silent lead-in instead of returning the degenerate 1/0 pair", () => {
+    const lead = silence(0.5, 8000);
+    const burst = noise(0.5, 8000);
+    const prefixed = new Float32Array(lead.length + burst.length);
+    prefixed.set(lead, 0);
+    prefixed.set(burst, lead.length);
+
+    const f = extractFeatures(audio(prefixed));
+    // Regression: the old extractor analysed only the first 1024 samples, so a
+    // silent lead-in made it report centroid 0 / flatness 1 for the whole sample.
+    expect(f.spectralCentroid).toBeGreaterThan(0);
+    expect(f.spectralFlatness).toBeGreaterThan(0.5);
+  });
+
   it("has high transientDensity and near-zero attack for an impulse", () => {
     // A single impulse is one strong transient at the very start.
     const f = extractFeatures(audio(impulse()));

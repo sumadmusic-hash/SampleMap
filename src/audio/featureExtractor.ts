@@ -9,6 +9,8 @@ import type { AudioFeatures } from "../persistence/indexStore";
  */
 
 const FFT_SIZE = 1024;
+/** Frame hop (50 % overlap) for the whole-signal spectral aggregation. */
+const SPECTRAL_HOP = FFT_SIZE / 2;
 
 export type { AudioFeatures } from "../persistence/indexStore";
 
@@ -129,82 +131,130 @@ interface SpectralStats {
   flatness: number;
 }
 
+/**
+ * Whole-signal spectral statistics.
+ *
+ * Stats are aggregated across ENERGY-BEARING frames over the entire buffer,
+ * mirroring the V2 DSP chain: every frame is Hann-windowed, and a frame whose
+ * magnitude sum is zero (digital silence) is SKIPPED, never measured.
+ *
+ * Why this matters: this function used to analyse only the FIRST
+ * `min(n, FFT_SIZE)` samples. Real samples very often begin with digital
+ * silence (encoder priming delay, a leading rest), and a silent frame has a
+ * zero magnitude sum — so the extractor returned its degenerate fallback
+ * (`centroid 0, bandwidth 0, rolloff 0, flatness 1`) for the whole sample.
+ * Measured against the live global index, 47.6 % of real records carried exactly
+ * that fabricated pair (`flatness === 1`, `centroid === 0`) with real audio
+ * behind it (rms 0.12, peak 0.71, duration 11.7 s) — not silence. Every
+ * downstream consumer of these fields (the similarity fingerprint, the global
+ * publish/hydrate round trip, and the spectral classifier thresholds) was
+ * therefore reading a constant instead of a measurement.
+ *
+ * The fallback is still returned for a buffer that is silent throughout, which
+ * is the one case where it is literally true.
+ */
 function computeSpectral(
   mono: Float32Array,
   sampleRate: number,
   n: number,
 ): SpectralStats {
   if (n === 0) return { centroid: 0, bandwidth: 0, rolloff: 0, flatness: 1 };
-  // Totality guard: the windowed FFT below is undefined for n === 1
-  // (fftN === 1 -> Float32Array(1.5) RangeError). The extractor must be a
-  // total function; the quality gate already rejects such inputs at the
-  // pipeline boundary, but direct callers stay safe too.
+  // Totality guard: a zero/one-sample buffer carries no spectrum at all.
   if (n < 2) return { centroid: 0, bandwidth: 0, rolloff: 0, flatness: 1 };
-  const fftN = nextPow2(Math.min(n, FFT_SIZE));
-  const mag = fftMag(mono.subarray(0, Math.min(n, fftN)), fftN);
+
+  const fftN = FFT_SIZE;
   // Positive-frequency bins: k = 0..fftN/2
-  const bins = mag.length;
+  const bins = fftN / 2 + 1;
   const freq = (k: number) => (k * sampleRate) / fftN;
+  const window = hannWindow(fftN);
+  const re = new Float32Array(fftN);
+  const im = new Float32Array(fftN);
 
-  let totalMag = 0;
-  for (let k = 0; k < bins; k++) totalMag += mag[k];
-  if (totalMag <= 0) return { centroid: 0, bandwidth: 0, rolloff: 0, flatness: 1 };
+  let totalMagSum = 0;
+  let centroidNum = 0;
+  let bandwidthNum = 0;
+  let rolloffNum = 0;
+  let flatnessNum = 0;
 
-  let centroid = 0;
-  for (let k = 0; k < bins; k++) centroid += freq(k) * mag[k];
-  centroid /= totalMag;
-
-  let bandwidth = 0;
-  for (let k = 0; k < bins; k++) bandwidth += mag[k] * (freq(k) - centroid) ** 2;
-  bandwidth = Math.sqrt(bandwidth / totalMag);
-
-  const rolloffEnergy = totalMag * 0.85;
-  let acc = 0;
-  let rolloff = freq(bins - 1);
-  for (let k = 0; k < bins; k++) {
-    acc += mag[k];
-    if (acc >= rolloffEnergy) {
-      rolloff = freq(k);
-      break;
+  for (let off = 0; off < n; off += SPECTRAL_HOP) {
+    for (let i = 0; i < fftN; i++) {
+      const s = off + i;
+      re[i] = s < n ? mono[s] * window[i] : 0;
+      im[i] = 0;
     }
+    fftInPlace(re, im);
+
+    let total = 0;
+    for (let k = 0; k < bins; k++) {
+      total += Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+    }
+    // Digital silence in THIS frame: skip it. A silent lead-in must never decide
+    // the features of a sample that has real audio behind it.
+    if (total <= 0) continue;
+
+    let centroid = 0;
+    for (let k = 0; k < bins; k++) {
+      centroid += freq(k) * Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+    }
+    centroid /= total;
+
+    let bandwidth = 0;
+    for (let k = 0; k < bins; k++) {
+      bandwidth += Math.sqrt(re[k] * re[k] + im[k] * im[k]) * (freq(k) - centroid) ** 2;
+    }
+    bandwidth = Math.sqrt(bandwidth / total);
+
+    const rolloffEnergy = total * 0.85;
+    let acc = 0;
+    let rolloff = freq(bins - 1);
+    for (let k = 0; k < bins; k++) {
+      acc += Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+      if (acc >= rolloffEnergy) {
+        rolloff = freq(k);
+        break;
+      }
+    }
+
+    // Geometric vs arithmetic mean over positive DC-excluded bins.
+    let logSum = 0;
+    let magSum = 0;
+    for (let k = 1; k < bins; k++) {
+      const m = Math.max(Math.sqrt(re[k] * re[k] + im[k] * im[k]), 1e-12);
+      logSum += Math.log(m);
+      magSum += m;
+    }
+    const count = bins - 1;
+    const flatness =
+      count > 0 && magSum > 0
+        ? clamp01(Math.exp(logSum / count) / (magSum / count))
+        : 1;
+
+    // Magnitude-weighted aggregation across frames (same weighting as V2).
+    totalMagSum += total;
+    centroidNum += total * centroid;
+    bandwidthNum += total * bandwidth;
+    rolloffNum += total * rolloff;
+    flatnessNum += total * flatness;
   }
 
-  // Geometric vs arithmetic mean over positive DC-excluded bins.
-  let logSum = 0;
-  let magSum = 0;
-  let count = 0;
-  for (let k = 1; k < bins; k++) {
-    const m = Math.max(mag[k], 1e-12);
-    logSum += Math.log(m);
-    magSum += m;
-    count++;
-  }
-  let flatness = 1;
-  if (count > 0 && magSum > 0) {
-    const geoMean = Math.exp(logSum / count);
-    const arithMean = magSum / count;
-    flatness = geoMean / arithMean;
-  }
-  flatness = clamp01(flatness);
+  // No energy-bearing frame at all: the buffer is genuinely silent.
+  if (totalMagSum <= 0) return { centroid: 0, bandwidth: 0, rolloff: 0, flatness: 1 };
 
-  return { centroid, bandwidth, rolloff, flatness };
+  return {
+    centroid: centroidNum / totalMagSum,
+    bandwidth: bandwidthNum / totalMagSum,
+    rolloff: rolloffNum / totalMagSum,
+    flatness: flatnessNum / totalMagSum,
+  };
 }
 
-function fftMag(samples: Float32Array, n: number): Float32Array {
-  const re = new Float32Array(n);
-  const im = new Float32Array(n);
-  // Apply a Hann window to the input.
-  for (let i = 0; i < samples.length; i++) {
-    const w = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (samples.length - 1 || 1)));
-    re[i] = samples[i] * w;
+/** Hann window coefficients of length `n` (deterministic, double precision). */
+function hannWindow(n: number): Float32Array {
+  const w = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    w[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (n - 1 || 1)));
   }
-  fftInPlace(re, im);
-  const half = n / 2 + 1;
-  const mag = new Float32Array(half);
-  for (let k = 0; k < half; k++) {
-    mag[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
-  }
-  return mag;
+  return w;
 }
 
 /** Iterative radix-2 Cooley-Tukey FFT in place. `n` must be a power of two. */
@@ -245,12 +295,6 @@ function fftInPlace(re: Float32Array, im: Float32Array): void {
       }
     }
   }
-}
-
-function nextPow2(v: number): number {
-  let p = 1;
-  while (p < v) p <<= 1;
-  return p;
 }
 
 function clamp01(v: number): number {

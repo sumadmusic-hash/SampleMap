@@ -215,6 +215,12 @@ async function main() {
         zcr: rec.analysisV2?.features?.zeroCrossingRate ?? rec.audioFeatures?.zeroCrossingRate,
         crest: rec.analysisV2?.features?.crestFactor,
         tags: meta.tags ?? [],
+        // STEP100 — the FULL feature sets are persisted so any later weight /
+        // threshold candidate can be evaluated OFFLINE against the identical
+        // corpus (no re-download, no re-analysis). Additive; consumers that only
+        // read the summary fields above are unaffected.
+        audioFeatures: rec.audioFeatures ?? null,
+        v2Features: rec.analysisV2?.features ?? null,
       });
     } catch (e) {
       statusCounts["threw"] = (statusCounts["threw"] ?? 0) + 1;

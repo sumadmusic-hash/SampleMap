@@ -487,7 +487,7 @@ describe("STEP44 drums (§12–§14)", () => {
     expect(r.hier.family).toBe("drums");
     expect(r.hier.type).toBe("cymbal");
   });
-  it("14. percussion residue: short ambiguous hit → percussion, NOT kick", () => {
+  it("14. short ambiguous hit: the best-scoring type is reported and flagged ambiguous, and it is NOT kick", () => {
     const feats = makeFeatures({
       duration: 0.3,
       transientDensity: 14,
@@ -513,7 +513,11 @@ describe("STEP44 drums (§12–§14)", () => {
       }),
     });
     expect(r.hier.family).toBe("drums");
-    expect(r.hier.type).toBe("percussion");
+    // STEP101: §14 no longer OVERWRITES the type with `percussion` — the raw winner
+    // is reported and the honest uncertainty is carried by `ambiguous` (measured:
+    // resolving instead of abstaining gains 12.6 pp of acoustic drum-type accuracy).
+    expect(r.hier.type).toBe("snare");
+    expect(r.hier.ambiguous).toBe(true);
     expect(r.hier.type).not.toBe("kick");
   });
 });
@@ -1236,8 +1240,8 @@ describe("STEP45 acoustic calibration (§10–§12 evidence-backed)", () => {
     expect(r.hier.ambiguous).toBe(true);
     expect(r.hier.reconciliation.status).toBe("UNKNOWN");
   });
-  it("47. percussion residue: generic short bright transient hit stays percussion (no fabricated subtype)", () => {
-    // Generic bright very-short transient with no specific anchor -> §14 residue.
+  it("47. generic short bright transient: reports its best-scoring type as ambiguous, with no fabricated subtype", () => {
+    // Generic bright very-short transient with no specific anchor.
     const feats = makeFeatures({
       duration: 0.2,
       transientDensity: 16,
@@ -1265,7 +1269,9 @@ describe("STEP45 acoustic calibration (§10–§12 evidence-backed)", () => {
       }),
     });
     expect(r.hier.family).toBe("drums");
-    expect(r.hier.type).toBe("percussion");
+    // STEP101: §14 keeps the honest `ambiguous` flag but no longer discards the type.
+    expect(r.hier.type).toBe("snare");
+    expect(r.hier.subtype).toBeUndefined();
     expect(r.hier.ambiguous).toBe(true);
   });
   it("48. kick: a darkMid thump (measured centroid 135–519Hz) is no longer crushed below the residue", () => {
@@ -1301,9 +1307,10 @@ describe("STEP45 acoustic calibration (§10–§12 evidence-backed)", () => {
     expect(r.hier.type).not.toBe("percussion");
   });
   it("49. hihat: measured closed-hat transient (5.2–8.5) + very short decay keeps hihat; a ringing bright noise is NOT a closed hat", () => {
-    // §14 gate: a 0.18s bright transient fires hihat best (1.0) but the margin
-    // to cymbal/clap (~0.80) is only 0.20 — genuinely ambiguous at ultra-short
-    // durations. Acoustic-only → percussion; tags rescue to hihat (TAG-SUPPORTED).
+    // §14 gate: a 0.18s bright transient fires hihat best (1.0) with only a ~0.20
+    // margin to cymbal/clap — genuinely ambiguous at ultra-short durations.
+    // STEP101: the acoustic winner (hihat) is now REPORTED instead of being
+    // overwritten with `percussion`, while `ambiguous` still marks the uncertainty.
     const closedV2 = v2({
       durationSec: 0.18,
       crestFactor: 7,
@@ -1330,7 +1337,8 @@ describe("STEP45 acoustic calibration (§10–§12 evidence-backed)", () => {
       { v2: closedV2 },
     );
     expect(closedNoTag.hier.family).toBe("drums");
-    expect(closedNoTag.hier.type).toBe("percussion");
+    expect(closedNoTag.hier.type).toBe("hihat");
+    expect(closedNoTag.hier.ambiguous).toBe(true);
     const closedWithTag = run(
       makeFeatures({
         duration: 0.18,

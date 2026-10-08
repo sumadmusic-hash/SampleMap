@@ -210,8 +210,15 @@ function decideWithin(
     // prefer correct family + ambiguous subtype over a confident guess. This is
     // a GENERAL rule, not a pair-specific gate, and is deliberately unchanged by
     // PHASE2.
+    // STEP101 (measured) — overwriting the type with `percussion` here was costing
+    // 12.6 pp of ACOUSTIC drum-type accuracy: 19.3 % -> 31.9 % on the 135 reliable
+    // one-shot rows of the STEP98 corpus (21 short hits resolve to their real type,
+    // 4 genuinely ambiguous percussion hits lose a correct abstention). The honest
+    // signal §14 was created for is `ambiguous`, NOT the overwritten type, so the
+    // flag is kept and only the destructive part is dropped: the best-scoring type
+    // is reported, consumers still see `ambiguous = true`, and because `ambiguous`
+    // still drives metadata adoption the reconciled output is byte-identical.
     if (veryShort && rawMargin < ULTRA_SHORT_SUBTYPE_MIN_MARGIN) {
-      type = "percussion";
       ambiguous = true;
     }
   }

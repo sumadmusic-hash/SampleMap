@@ -148,13 +148,50 @@ console.log(
     "adoption scores better on it regardless of acoustic quality. Only the ACOUSTIC-ONLY\n" +
     "number is evidence about the recognition algorithm itself.",
 );
-console.log("\nconfusion (reliable label -> predicted):");
+
+// STEP102 — held-out robustness check. Any single-term candidate can move the total by
+// a few samples on noise alone, so a candidate must ALSO improve BOTH deterministic
+// halves. All three candidates tested in STEP102 gained only in one half (or lost), and
+// were rejected on this check.
+const halfOf = (sampleId: string) => {
+  let h = 0;
+  for (const c of sampleId) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return h % 2;
+};
+console.log("\nACOUSTIC-ONLY by deterministic half (a candidate must improve BOTH):");
+for (const half of [0, 1]) {
+  const rowsInHalf = reliableShots.filter((r) => halfOf(r.sampleId) === half);
+  const ok = rowsInHalf.filter((r) => r.acoustic === r.meta).length;
+  console.log(
+    `  half ${half}: n=${String(rowsInHalf.length).padStart(3)}  ${ok}/${rowsInHalf.length} = ${((ok / Math.max(1, rowsInHalf.length)) * 100).toFixed(1)}%`,
+  );
+}
+console.log("\nconfusion (reliable label -> predicted), RECONCILED:");
 for (const t of DRUM_TYPES) {
   const row = confusion.get(t);
   if (!row) continue;
   const total = [...row.values()].reduce((a, b) => a + b, 0);
   const cells = [...row.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`).join("  ");
   console.log(`  ${t.padEnd(11)} n=${String(total).padStart(3)}  ${cells}`);
+}
+
+// The metric that matters: where do the ACOUSTIC decisions actually go?
+const acousticConfusion = new Map<string, Map<string, number>>();
+for (const r of reliableShots) {
+  const row = acousticConfusion.get(r.meta!) ?? new Map<string, number>();
+  row.set(r.acoustic, (row.get(r.acoustic) ?? 0) + 1);
+  acousticConfusion.set(r.meta!, row);
+}
+console.log("\nconfusion (reliable label -> predicted), ACOUSTIC-ONLY:");
+for (const t of DRUM_TYPES) {
+  const row = acousticConfusion.get(t);
+  if (!row) continue;
+  const total = [...row.values()].reduce((a, b) => a + b, 0);
+  const exact = row.get(t) ?? 0;
+  const cells = [...row.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`).join("  ");
+  console.log(
+    `  ${t.padEnd(11)} n=${String(total).padStart(3)}  exact=${String(exact).padStart(2)}  ${cells}`,
+  );
 }
 
 if (JSON_OUT) {

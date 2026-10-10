@@ -245,7 +245,10 @@ describe("OFFLINE E2E : full SampleMap chain (synthetic audio, no real backend)"
     }
   });
 
-  it("is idempotent: re-running the same build does not re-fetch audio", async () => {
+  // Measured in isolation: the three pipeline.run() calls total ~0.5s; under
+  // parallel load with WASM cold-start the whole test can exceed the default
+  // 5000ms. Raise timeout for this test only (assertions/coverage unchanged).
+  it("is idempotent: re-running the same build does not re-fetch audio", { timeout: 30000 }, async () => {
     const handle = await openTestDatabase();
     try {
       await handle.queue.enqueue(KICK_ID, BUILD);

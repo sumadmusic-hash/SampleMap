@@ -33,7 +33,10 @@ describe("V2 calibration corpus (FIXTURE-class evidence)", () => {
     }
   });
 
-  it("analysis of every corpus member at every sample rate is structurally valid", () => {
+  // Full matrix: 16 corpus members x 4 sample rates = 64 real analyses.
+  // Measured ~5.6-18s depending on machine load, so the default 5000ms test
+  // timeout is too tight; raise it only for this test (coverage unchanged).
+  it("analysis of every corpus member at every sample rate is structurally valid", { timeout: 30000 }, () => {
     for (const name of V2_CORPUS_NAMES) {
       for (const sr of V2_SAMPLE_RATES) {
         expect(validateAudioFeaturesV2(F(name, sr)).valid).toBe(true);

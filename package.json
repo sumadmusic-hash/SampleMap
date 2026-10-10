@@ -20,6 +20,9 @@
     "poc"
   ],
   "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "dependencies": {
     "@audiotool/nexus": "0.0.19"
   },

@@ -26,7 +26,6 @@ async function refs(doc: any, name: string, label: string) {
     displayName: "Juul perc",
     description: "",
     ownerName: "users/tye_master_83",
-    favoritedByUser: false,
     numFavorites: 0,
     numUsages: 0,
     bpm: 0,

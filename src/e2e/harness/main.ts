@@ -140,7 +140,6 @@ function makeMeta(
     displayName,
     description: "",
     ownerName: "users/alice",
-    favoritedByUser: false,
     numFavorites: metadata.numFavorites ?? 0,
     numUsages: metadata.numUsages ?? 0,
     bpm: metadata.bpm ?? 0,

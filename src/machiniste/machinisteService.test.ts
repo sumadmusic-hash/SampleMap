@@ -33,7 +33,6 @@ const mkSample = (
   displayName: name,
   description: "",
   ownerName: "users/owner",
-  favoritedByUser: false,
   numFavorites: 0,
   numUsages: 0,
   bpm: 0,

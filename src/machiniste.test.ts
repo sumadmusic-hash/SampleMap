@@ -29,7 +29,6 @@ const LIBRARY_SAMPLE: SampleMeta = {
   displayName: "Juul perc",
   description: "",
   ownerName: "users/another-user",
-  favoritedByUser: false,
   numFavorites: 0,
   numUsages: 0,
   bpm: 0,

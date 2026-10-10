@@ -17,7 +17,6 @@ const META = (o: Partial<SampleMeta>): SampleMeta => ({
   displayName: "Hard Kick",
   description: "",
   ownerName: "users/bob",
-  favoritedByUser: false,
   numFavorites: 0,
   numUsages: 0,
   bpm: 0,

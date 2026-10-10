@@ -134,7 +134,6 @@ const META_A: SampleMeta = {
   displayName: "Kick A",
   description: "",
   ownerName: "users/alice",
-  favoritedByUser: false,
   numFavorites: 0,
   numUsages: 0,
   bpm: 0,

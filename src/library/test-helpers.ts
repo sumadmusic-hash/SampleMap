@@ -15,7 +15,6 @@ export function makeSampleMeta(
     displayName: overrides.displayName ?? `Sample ${seq}`,
     description: "",
     ownerName: "users/alice",
-    favoritedByUser: false,
     numFavorites: 0,
     numUsages: 0,
     bpm: 0,

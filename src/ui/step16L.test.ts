@@ -90,7 +90,7 @@ function localRecord(
 
 const META_GLOBAL: SampleMeta = {
   name: "samples/global-a", displayName: "Global Kick", description: "",
-  ownerName: "users/bob", favoritedByUser: false, numFavorites: 0, numUsages: 0,
+  ownerName: "users/bob", numFavorites: 0, numUsages: 0,
   bpm: 0, kind: "one-shot", visibility: "public", tags: ["global-kick"],
   createTime: undefined, updateTime: undefined, durationSeconds: 0.5,
   mp3Url: "https://cdn/global-a.mp3", wavUrl: "https://cdn/global-a.wav",

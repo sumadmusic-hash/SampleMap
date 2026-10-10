@@ -76,7 +76,7 @@ export const PUBLIC_DISCOVERY_PAGE_SIZE = 40;
  * single-field server-side sort order.
  *
  * WHY TWO LANES INSTEAD OF ONE COMBINED ORDER (verified against the installed
- * `@audiotool/nexus@0.0.17` contract, see `SampleListOptions.orderBy`):
+ * `@audiotool/nexus@0.0.19` contract, see `SampleListOptions.orderBy`):
  *   - `orderBy` is typed as a single `string` (SDK option AND the protobuf
  *     `ListSamplesRequest.order_by` field 5),
  *   - it is documented only in the singular form, e.g. `"sample.create_time desc"`,

@@ -21,7 +21,7 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@audiotool/nexus": "0.0.17"
+    "@audiotool/nexus": "0.0.19"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

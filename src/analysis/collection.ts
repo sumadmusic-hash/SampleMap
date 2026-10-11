@@ -46,22 +46,57 @@ export interface SoundCollectionState {
   readonly open: boolean;
 }
 
+const collectionIndex = new WeakMap<SoundCollectionState, ReadonlySet<string>>();
+
+/** Shared immutable empties — an empty array/Set is never re-allocated. */
+const EMPTY_SAMPLE_IDS: readonly string[] = Object.freeze([] as string[]);
+const EMPTY_MEMBERS: ReadonlySet<string> = new Set();
+
 /** The safe initial collection (closed, empty). */
 export function emptyCollectionState(): SoundCollectionState {
-  return { sampleIds: [], open: false };
+  const state = { sampleIds: [], open: false };
+  collectionIndex.set(state, EMPTY_MEMBERS);
+  return state;
 }
 
-/** Whether `sampleId` is a collection member (identity is the id, §26). */
+/**
+ * Whether `sampleId` is a collection member (identity is the id, §26).
+ *
+ * Performance note: every mutating operation below goes through `withIds`,
+ * which derives a Set index from `sampleIds` exactly once per state change.
+ * Membership checks then stay O(1) instead of scanning the array — this turns
+ * a sequence of N add/toggle/remove calls from O(N²) into O(N) while keeping
+ * the public state shape (`sampleIds` + `open`) byte-for-byte compatible.
+ */
+function memberSet(collection: SoundCollectionState): ReadonlySet<string> {
+  let set = collectionIndex.get(collection);
+  if (!set) {
+    set = new Set(collection.sampleIds);
+    collectionIndex.set(collection, set);
+  }
+  return set;
+}
+
 export function collectionContains(
   collection: SoundCollectionState,
   sampleId: string,
 ): boolean {
-  return collection.sampleIds.includes(sampleId);
+  return memberSet(collection).has(sampleId);
 }
 
 /** Whether the collection is at the hard cap (adds are then no-ops). */
 export function isCollectionFull(collection: SoundCollectionState): boolean {
   return collection.sampleIds.length >= COLLECTION_MAX_SAMPLES;
+}
+
+/** Build the next immutable state and attach its freshly derived index. */
+function withIds(
+  collection: SoundCollectionState,
+  sampleIds: readonly string[],
+): SoundCollectionState {
+  const next = { ...collection, sampleIds };
+  collectionIndex.set(next, new Set(sampleIds));
+  return next;
 }
 
 /**
@@ -75,16 +110,16 @@ export function addToCollection(
 ): SoundCollectionState {
   if (!collectionContains(collection, sampleId)) {
     if (isCollectionFull(collection)) return collection;
-    return { ...collection, sampleIds: [...collection.sampleIds, sampleId] };
+    return withIds(collection, [...collection.sampleIds, sampleId]);
   }
   // Re-add: move to the end of the explicit order. Already last → same state.
   if (collection.sampleIds[collection.sampleIds.length - 1] === sampleId) {
     return collection;
   }
-  return {
-    ...collection,
-    sampleIds: [...collection.sampleIds.filter((id) => id !== sampleId), sampleId],
-  };
+  return withIds(
+    collection,
+    [...collection.sampleIds.filter((id) => id !== sampleId), sampleId],
+  );
 }
 
 /**
@@ -97,10 +132,10 @@ export function removeFromCollection(
   sampleId: string,
 ): SoundCollectionState {
   if (!collectionContains(collection, sampleId)) return collection;
-  return {
-    ...collection,
-    sampleIds: collection.sampleIds.filter((id) => id !== sampleId),
-  };
+  return withIds(
+    collection,
+    collection.sampleIds.filter((id) => id !== sampleId),
+  );
 }
 
 /**
@@ -124,7 +159,7 @@ export function clearCollection(
   collection: SoundCollectionState,
 ): SoundCollectionState {
   if (collection.sampleIds.length === 0) return collection;
-  return { ...collection, sampleIds: [] };
+  return withIds(collection, EMPTY_SAMPLE_IDS);
 }
 
 /**

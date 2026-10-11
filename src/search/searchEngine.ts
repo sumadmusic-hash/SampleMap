@@ -220,9 +220,12 @@ function searchableTokens(record: SampleIndexRecord): string[] {
 function bestTokenMatch(q: string, haystack: string[]): number {
   let best = 0;
   for (const t of haystack) {
-    if (t === q) return 3;
-    if (t.startsWith(q)) best = Math.max(best, 2);
-    else if (t.includes(q)) best = Math.max(best, 1);
+    if (t === q) return 3; // exact match is the maximum — stop immediately
+    if (best < 2 && t.startsWith(q)) best = 2;
+    else if (best < 1 && t.includes(q)) best = 1;
+    // Once a prefix hit exists, only an exact match can still improve the
+    // score, so skip the remaining startsWith/includes work for this token.
+    if (best === 2) continue;
   }
   return best;
 }

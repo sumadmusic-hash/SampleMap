@@ -42,6 +42,7 @@
  */
 import {
   createSimilarityEngine,
+  weightedEuclideanSimilarity,
   type SimilarityEngine,
 } from "./similarityEngine";
 import { ANALYSIS_VERSION, type SampleAnalysisV2 } from "./sampleAnalysisV2";
@@ -139,9 +140,17 @@ function assertCoverage(option: number | undefined): void {
   }
 }
 
-function sharedDimensionCount(a: SoundCharacter, b: SoundCharacter): number {
-  const va = toSimilarityVector(a);
-  const vb = toSimilarityVector(b);
+/**
+ * Shared-dimension count over two PRE-COMPUTED similarity vectors.
+ * Optimization note: callers that already materialize the query/candidate
+ * vectors (see `rankSimilar`) pass them in here, so each vector is built at
+ * most ONCE per record instead of twice per pair — identical result, half the
+ * allocations on large candidate pools.
+ */
+function sharedDimensionCountVectors(
+  va: SoundCharacterVector,
+  vb: SoundCharacterVector,
+): number {
   let count = 0;
   for (let i = 0; i < va.length; i++) {
     if (va[i] !== null && vb[i] !== null) count++;
@@ -194,6 +203,12 @@ export function rankSimilar(
   const queryId = "sampleId" in query ? query.sampleId : undefined;
   const includeSelf = options.includeSelf === true;
 
+  // Performance: materialize the query vector ONCE and each candidate's vector
+  // at most once per record. The similarity math and the shared-dimension count
+  // then read the same pre-computed vectors — identical results, no repeated
+  // allocations on large candidate pools.
+  const vecA = toSimilarityVector(charA);
+
   const seen = new Set<string>();
   const scored: SimilarityResult[] = [];
   for (const rec of candidates) {
@@ -205,13 +220,14 @@ export function rankSimilar(
     if (minCoverage !== undefined && computeSoundCharacterQuality(charB).featureCoverage < minCoverage) {
       continue; // policy 6
     }
-    const similarity = engine.similarity(charA, charB);
+    const vecB = toSimilarityVector(charB);
+    const similarity = weightedEuclideanSimilarity(vecA, vecB, engine.config.weights);
     if (similarity === null) continue; // policy 5: 0 shared dims
     scored.push({
       sampleId: rec.sampleId,
       similarity,
       distance: 1 - similarity,
-      sharedDimensionCount: sharedDimensionCount(charA, charB),
+      sharedDimensionCount: sharedDimensionCountVectors(vecA, vecB),
     });
   }
 

@@ -1186,13 +1186,16 @@ function renderMapOnly(root: HTMLElement, app: SampleMapApp): boolean {
 }
 
 /**
- * First-use note on the primary map.
+ * First-use screen on the primary map — with ONE click indexing.
  *
- * STEP86/STEP93: this is purely INFORMATION. Indexing is manual (Advanced ->
- * Start Scan), so the note no longer claims a background run is happening and
- * simply points at that existing control; there is no scan CTA on the map.
+ * UX simplification: indexing previously required three steps hidden behind
+ * the Advanced drawer (Advanced → Start Scan → Analyse N). This overlay now
+ * carries a single primary action that runs the existing, fully guarded
+ * orchestration (`startBackgroundIndexing`: exactly one scan + one analysis
+ * pass per app instance, INV-3 budget respected) directly on the map —
+ * no drawer needed for the first-run flow.
  */
-function renderFirstUseOverlay(): HTMLElement {
+function renderFirstUseOverlay(app: SampleMapApp): HTMLElement {
   const overlay = el("div", "first-use-overlay");
   overlay.setAttribute("data-testid", "first-use");
   overlay.appendChild(
@@ -1202,9 +1205,13 @@ function renderFirstUseOverlay(): HTMLElement {
     el(
       "div",
       "first-use-sub",
-      "Your public Audiotool samples, arranged as an explorable soundscape. Use Start Scan under Advanced to index your library — samples appear here as they are analyzed.",
+      "Your public Audiotool samples, arranged as an explorable soundscape. Samples appear here as they are analyzed.",
     ),
   );
+  const cta = button("first-use-index-btn", "Index my samples");
+  cta.setAttribute("data-testid", "first-use-index");
+  cta.onclick = () => void app.startBackgroundIndexing();
+  overlay.appendChild(cta);
   return overlay;
 }
 
